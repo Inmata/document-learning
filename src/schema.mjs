@@ -16,6 +16,21 @@ export const learningSchema = {
     "context": {
       "type": "object"
     },
+    "revise": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "strength", "scopeBasis", "evidence"],
+        "properties": {
+          "id": {"type": "string"},
+          "strength": {"type": "string", "enum": ["suggestion", "default", "required"]},
+          "scopeBasis": {"type": "string", "enum": ["explicit"]},
+          "text": {"type": "string", "minLength": 1, "maxLength": 6000},
+          "evidence": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["source", "quote"], "properties": {"source": {"type": "string"}, "quote": {"type": "string", "minLength": 2}}}}
+        }
+      }
+    },
     "rules": {
       "type": "array",
       "items": {
@@ -1339,4 +1354,3 @@ export const learningSchema = {
     }
   }
 };
-

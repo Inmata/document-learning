@@ -1,4 +1,4 @@
-import { readFile, mkdir, realpath } from 'node:fs/promises';
+import { readFile, mkdir, lstat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { atomicWrite, fingerprint, inside, hash, withLock, writeJson, readJson } from './io.mjs';
 import { verifyEvidence, normalizeScope, scopeMatch } from './knowledge.mjs';
@@ -31,7 +31,7 @@ export async function publishSkills(library, proposals, { repository } = {}) {
       await mkdir(root, { recursive: true });
       const folder = inside(root, p.name);
       // Existing junctions may target another authorized library, but publication never follows them implicitly.
-      try { if (resolve(await realpath(folder)) !== resolve(folder)) throw new Error('技能目录是链接，请绑定真实仓库路径'); }
+      try { if ((await lstat(folder)).isSymbolicLink()) throw new Error('技能目录是链接，请绑定真实仓库路径'); }
       catch (e) { if (e.code !== 'ENOENT') throw e; }
       const path = join(folder, 'SKILL.md');
       const prepared=await prepareCommit(repository,[path,join(folder,'agents','openai.yaml')]);

@@ -91,3 +91,15 @@ test('尚未晋升的局部方法能作为跨对象类比检索，偏好和参�
   assert.equal(result.transfer[0].strength,'suggestion');assert.equal(result.transfer[0].requiresAdaptation,true);
   assert.equal((await lib.read()).rules[0].strength,'required');assert.deepEqual((await lib.read()).rules[0].scope,{task:'pcb'});
 });
+
+test('明确重定义可以单独降低执行强度，重复或别的报告不能改写它',async t=>{
+  const lib=await fixture(t),a=source('a','图片下方必须保留图注');
+  await applyLearning(lib,{sources:[a],rules:[{...rule('a',a.text),strength:'required'}]});
+  const id=(await lib.read()).rules[0].id;
+  const b=source('b','把这条改成建议，不再强制');
+  const payload={sources:[b],revise:[{id,strength:'suggestion',scopeBasis:'explicit',evidence:[{source:'b',quote:b.text}]}]};
+  await applyLearning(lib,payload);await applyLearning(lib,payload);
+  const revised=(await lib.read()).rules[0];assert.equal(revised.strength,'suggestion');assert.deepEqual(revised.scope,{task:'A'});assert.equal(revised.revisions.length,1);
+  const c=source('c','这份报告必须放图注','B');
+  await assert.rejects(applyLearning(lib,{sources:[c],revise:[{id,strength:'required',scopeBasis:'explicit',evidence:[{source:'c',quote:c.text}]}]}),/其他场景/);
+});

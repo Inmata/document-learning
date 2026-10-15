@@ -25,9 +25,9 @@ function score(decision,expected) {
 }
 function validateDecision(state,sources,output) {
   if(output.sources)throw new Error('模型不能提供原始用户来源');
-  if(!output.document && [output.rules,output.observations,output.retire,output.skills].some(x=>x?.length))throw new Error('非文档判断不能写入文档经验，rules/observations/retire/skills 应为空数组');
+  if(!output.document && [output.rules,output.revise,output.observations,output.retire,output.skills].some(x=>x?.length))throw new Error('非文档判断不能写入文档经验，所有学习数组应为空');
   const prospective=structuredClone(state);
-  mergeLearning(prospective,{sources,rules:output.rules || [],observations:output.observations || [],retire:output.retire || []});
+  mergeLearning(prospective,{sources,rules:output.rules || [],revise:output.revise || [],observations:output.observations || [],retire:output.retire || []});
   for(const p of output.skills || [])validateSkillProposal(prospective,p);
 }
 async function checkedDecision(learner,request,state,sources,initial,onFailure=()=>{}) {
@@ -82,7 +82,7 @@ export async function runReplay(library,dataset,learner,{jobId,expectations={},p
         // Invalid control output is an evaluation result. It cannot block the evolving
         // branch, and repairing it would give the frozen baseline extra assistance.
         const repairs={evolving:checked.repairs,frozen:[],frozenValidationError:controlError};
-        const result=await applyLearning(evolving,{sources,rules:decision.rules || [],observations:decision.observations || [],retire:decision.retire || []});
+        const result=await applyLearning(evolving,{sources,rules:decision.rules || [],revise:decision.revise || [],observations:decision.observations || [],retire:decision.retire || []});
         run.results.push({step:step.id,session:step.session,document:decision.document,context:decision.context,changes:result.result,evolving:decision,frozen:control,repairs,evaluation:{evolving:score(decision,expectations[step.id]),frozen:score(control,expectations[step.id])},inputDigest:hash(evolveRequest),elapsedMs:Date.now()-started});
         run.proposals.push(...(decision.skills || []));
         run.index=i+1;run.status='running';delete run.error;
@@ -106,6 +106,9 @@ export async function reconcileReplay(library,root,{repository}={}) {
   const current=await library.read();
   const conflicts=[];
   const rules=learned.rules.filter(r=>r.status==='active').filter(r=>{
+    // Already imported alternatives belong to the same historical evidence set.
+    // Re-reading that set is not a new current decision or a new conflict.
+    if(current.rules.some(existing=>existing.id===r.id))return true;
     const existing=current.rules.filter(x=>x.status==='active'&&x.key===r.key&&hash(x.scope)===hash(r.scope)&&x.value!==r.value);
     if(existing.length){conflicts.push(r);return false;}return true;
   });

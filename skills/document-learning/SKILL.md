@@ -23,6 +23,8 @@ Windows PowerShell 5.1 的原生 stdin 管道可能损失中文；复杂信号�
 
 context 只填已知条件。可用 task、kind、purpose、audience、customer、template、format、process、object、workspace、skill；当前明确选择可放 requirements（经验 key 到 value 的映射）。同一文档的后续修订沿用 task，新文档另建。非文档任务 document=false 即完成本轮。
 
+宿主或当前指令要求只计划时，在 context.mode 中注明 plan。经验可记入私有库，技能文件变更先保留候选；等同一任务获得实施授权并处于可实施模式时，对照新资料重新整理并自动提交，不能趁记录经验修改受限的项目或正式技能文件。
+
 根据 hook 返回的适用经验和技能制定计划。当前需求优先；明确调用的技能仍需当前任务授权。一般偏好自动应用，只在无法推断且显著影响结果的取舍处补齐信息；不逐条请求记录或晋升批准。只读当前匹配的技能和必要资源。
 
 实际使用了某个文档技能时，在 context.skill 中记录其标识，完成前判断本次反馈是否应更新该技能。局部偏好、事实可留在个人库；可复用的流程改进通过 skills 提案自动维护原技能的管理区。没有值得迭代的变化也可提交空回执。skillCandidates 是检索目录，核对范围后再采用；避免因措辞不同重复创建同一能力。
@@ -36,6 +38,7 @@ context 只填已知条件。可用 task、kind、purpose、audience、customer�
 - evidence：`[{"source":"原始消息ID","quote":"用户原话"}]`。助手总结、用户沉默、自动提交和回放输出不构成新的用户证据。
 - 偏好默认限定当前 task。用户明确表达更广范围时才使用 scopeBasis=explicit，并引用表达该范围的原话。可信程度提高不自动扩大范围或变为强制要求。可机械检查的要求也有适用条件。
 - 一次反向选择先作为当前任务的条件或例外。未知原因如实保留；相交范围的相反选择交给当前需求决定，不以频次或最近出现自动覆盖。
+- 用户明确重新定义同一条规则的执行强度时，用 revise：id、strength、scopeBasis=explicit、evidence，可选 text。普通重复或另一份报告的例外不构成改写依据。规则范围保持原值；若影响已引用它的技能，完成时同时整理相关技能管理区。
 - fact 保留原 task，参数由新任务资料决定。共享方法按用途条件存储，可供不同对象的操作说明使用。
 - 无法形成可靠规则的反馈放 observations：text、scope、evidence。只有明确撤销原范围要求时才提交 retire（id、scope、evidence）。
 

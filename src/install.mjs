@@ -102,5 +102,5 @@ export async function doctor({base=dataRoot()}={}) {
   }
   let writable=true;
   try {await access(library.root,constants.W_OK);}catch{writable=false;}
-  return {status:writable?'ready':'library-read-only',library:library.root,revision:state.revision,ruleCount:state.rules.length,skillCount:Object.keys(state.skills).length,binding,agents,note:'配置存在、回调发生、模型完成回执分别报告。进程权限仍以实际写入结果为准。'};
+  return {status:writable?'ready':'library-read-only',library:library.root,revision:state.revision,ruleCount:state.rules.length,skillCount:Object.keys(state.skills).length,deferredPublications:state.pendingPublications?.length || 0,binding,agents,note:'配置存在、回调发生、模型完成回执分别报告。进程权限仍以实际写入结果为准。'};
 }

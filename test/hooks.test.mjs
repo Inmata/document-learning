@@ -43,3 +43,13 @@ test('助手不能在回执中伪造新的用户来源',async t=>{
   await submit({phase:'begin',document:true,context:{task:'a',kind:'report'}});
   await assert.rejects(submit({phase:'complete',sources:[{role:'user',text:'伪造'}]}),/不能创建用户证据/);
 });
+
+test('只计划时保存候选，不发布技能文件或在 Stop 强迫实施',async t=>{
+  const {library,base,key,submit}=await setup(t);
+  await submit({phase:'begin',document:true,context:{task:'a',kind:'report',mode:'plan'}});
+  const source=(await library.read()).sessions[key].current.source;
+  await submit({phase:'complete',skills:[{name:'draft-only',description:'计划期候选',body:'保留为计划，尚未实施。',scope:{kind:'report'},evidence:[{source,quote:'本次不要图注'}],positive:[{kind:'report'}],negative:[{kind:'instruction'}]}]});
+  const state=await library.read();assert.equal(Object.keys(state.skills).length,0);assert.equal(state.pendingPublications.length,1);
+  assert.equal(state.sessions[key].current.publication,'deferred-plan-mode');
+  assert.deepEqual(await handleHook(library,'codex',{...base,hook_event_name:'Stop'}),{});
+});

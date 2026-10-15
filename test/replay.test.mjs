@@ -70,3 +70,13 @@ test('冻结对照的无效提案被记录，不阻塞通过检查的演化分�
   assert.equal(run.status,'complete');assert.equal(run.summary.frozenValidationErrors,1);
   await reconcileReplay(lib,root);assert.equal((await lib.read()).rules.length,1);
 });
+
+test('重复回补保留同批的未解偏好冲突，不把它误认成新的当前要求',async t=>{
+  const lib=await fixture(t);
+  const sessions=[normalizeSession({id:'ambiguous',context:{task:'a',kind:'report'},messages:[{role:'user',text:'图注可以放下方，也可以不加图注'}]})];
+  const data={sessions,inputDigest:hash(sessions),warnings:[]};
+  const learner=async req=>({...empty,rules:['below','none'].map(value=>({key:'figure.caption',value,text:value==='below'?'图注放下方':'不加图注',category:'preference',strength:'default',scope:{task:'a'},evidence:[{source:req.current.id,quote:req.current.text}]}))});
+  const {root}=await runReplay(lib,data,learner);await reconcileReplay(lib,root);
+  const before=await lib.read();await reconcileReplay(lib,root);const after=await lib.read();
+  assert.equal(after.rules.length,2);assert.equal(after.observations.length,before.observations.length);assert.equal(after.revision,before.revision);
+});

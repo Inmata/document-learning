@@ -46,6 +46,7 @@ export async function handleHook(library, agent, event, { repository } = {}) {
     await library.transact('session-start',state => {
       const session = state.sessions[key] ||= { agent, id:event.session_id, sequence:0 };
       session.cwd = event.cwd || session.cwd; session.lastStart = new Date().toISOString(); session.source = event.source || 'startup';
+      session.permissionMode=event.permission_mode || session.permissionMode || 'default';
     });
     const s = (await library.read()).sessions[key];
     const pending = s.current && !terminal(s.current) ? `上轮 ${s.current.id} 尚未完成学习回执，恢复时继续处理。` : '';
@@ -59,7 +60,7 @@ export async function handleHook(library, agent, event, { repository } = {}) {
       if (session.current && !terminal(session.current)) (session.pending ||= []).push(session.current);
       session.sequence++;
       const id = event.turn_id || `${session.sequence}-${hash(prompt).slice(0,10)}`;
-      session.current = {id,token:randomUUID(),prompt,cwd:event.cwd,receipt:'pending',repairCount:0,tools:[],at:new Date().toISOString()};
+      session.current = {id,token:randomUUID(),prompt,cwd:event.cwd,permissionMode:event.permission_mode || session.permissionMode || 'default',receipt:'pending',repairCount:0,tools:[],at:new Date().toISOString()};
     });
     const turn = (await library.read()).sessions[key].current;
     return contextOutput(name,guidance(key,turn));
@@ -71,7 +72,7 @@ export async function handleHook(library, agent, event, { repository } = {}) {
   if (name === 'PostToolUse') {
     const packet = signalFrom(event.tool_response ?? event.tool_result);
     if (packet && packet.session === key && packet.turn === turn.id && packet.token === turn.token) {
-      return processSignal(library,key,packet,{repository});
+      return processSignal(library,key,packet,{repository,permissionMode:event.permission_mode});
     }
     if (turn.document && !terminal(turn)) await library.transact('tool-observation',state => {
       const current = state.sessions[key].current;
@@ -101,7 +102,7 @@ export async function handleHook(library, agent, event, { repository } = {}) {
   return {};
 }
 
-export async function processSignal(library,key,packet,{repository} = {}) {
+export async function processSignal(library,key,packet,{repository,permissionMode} = {}) {
   const current = (await library.read()).sessions[key]?.current;
   if (!current || current.id !== packet.turn || current.token !== packet.token) throw new Error('学习信号已过期或不属于当前会话');
   if (terminal(current)) return {};
@@ -127,21 +128,34 @@ export async function processSignal(library,key,packet,{repository} = {}) {
     const available=Object.values((await library.read()).skills).filter(s=>s.status!=='retired'&&(s.implicit!==false||t.prompt.includes(`$${s.name}`)));
     const skills=available.filter(s=>scopeMatch(s.scope,t.context)==='yes');
     const candidates=available.filter(s=>!skills.includes(s)).sort((a,b)=>Number(scopeMatch(b.scope,t.context)==='unknown')-Number(scopeMatch(a.scope,t.context)==='unknown'));
-    return contextOutput('PostToolUse',`文档学习检索结果：${JSON.stringify({source:t.source,context:t.context,...compactMatches(match,skills,candidates)})}。当前需求优先。transfer 仅为其他任务的方法类比，判断是否依赖旧对象后才参考，不搬运参数、偏好或强制程度，不扩大原规则范围。skillCandidates 仅为已有能力目录，核对实际输入和范围后再决定是否读取，创建新技能前先检查覆盖。不要自动调用明确调用的技能。条目截断时可用 show-rule --name ID 按需查看完整来源。完成任务后使用相同 session/turn/token 提交 phase=complete，携带 rules、observations、retire、skills；无新经验可提交空数组。`);
+    const deferred=((await library.read()).pendingPublications || []).filter(p=>p.task===t.context.task).map(p=>({id:p.id,names:p.skills.map(s=>s.name),reason:'计划期候选，请对照当前资料重新整理后再提交'}));
+    return contextOutput('PostToolUse',`文档学习检索结果：${JSON.stringify({source:t.source,context:t.context,deferred,...compactMatches(match,skills,candidates)})}。当前需求优先。transfer 仅为其他任务的方法类比，判断是否依赖旧对象后才参考，不搬运参数、偏好或强制程度，不扩大原规则范围。skillCandidates 仅为已有能力目录，核对实际输入和范围后再决定是否读取，创建新技能前先检查覆盖。不要自动调用明确调用的技能。条目截断时可用 show-rule --name ID 按需查看完整来源。完成任务后使用相同 session/turn/token 提交 phase=complete，携带 rules、observations、retire、skills；无新经验可提交空数组。`);
   }
   if (!current.document || !current.context) throw new Error('先提交文档任务判断，再完成学习');
   const digest = hash(packet);
   await library.transact('turn-learning',state => {
     const t = state.sessions[key].current;
-    mergeLearning(state,{rules:packet.rules || [],observations:packet.observations || [],retire:packet.retire || []});
+    mergeLearning(state,{rules:packet.rules || [],revise:packet.revise || [],observations:packet.observations || [],retire:packet.retire || []});
     t.completionDigest = digest;
   });
+  const planOnly=permissionMode==='plan' || current.permissionMode==='plan' || current.context.mode==='plan';
+  if(planOnly && (packet.skills?.length || packet.retireSkills?.length)) {
+    await library.transact('defer-publication',state=>{
+      const proposal={task:current.context.task,skills:packet.skills || [],retireSkills:packet.retireSkills || []};
+      const id=hash(proposal).slice(0,24);state.pendingPublications ||= [];
+      if(!state.pendingPublications.some(p=>p.id===id))state.pendingPublications.push({id,...proposal});
+      state.sessions[key].current.receipt='complete';state.sessions[key].current.publication='deferred-plan-mode';
+    });
+    return contextOutput('PostToolUse','经验已记入个人库；计划期的技能候选尚未发布，下次同文档处于可实施模式时对照新资料重新整理。');
+  }
   const skills = await publishSkills(library,packet.skills || [],{repository});
   const retired = await retireSkills(library,packet.retireSkills || []);
   await library.transact('turn-receipt',state => {
     const t = state.sessions[key].current;
-    t.receipt = skills.some(s=>s.status==='manual-change') ? 'pending-recovery' : ((packet.rules?.length || packet.skills?.length || packet.retire?.length || packet.observations?.length || retired.length) ? 'complete' : 'no-new-learning');
+    t.receipt = skills.some(s=>s.status==='manual-change') ? 'pending-recovery' : ((packet.rules?.length || packet.revise?.length || packet.skills?.length || packet.retire?.length || packet.observations?.length || retired.length) ? 'complete' : 'no-new-learning');
     t.skillResults = skills;
+    const completedNames=new Set([...skills.filter(s=>s.status==='published').map(s=>s.name),...retired.map(s=>s.name)]);
+    state.pendingPublications=(state.pendingPublications || []).filter(p=>p.task!==t.context.task || [...p.skills,...p.retireSkills].some(s=>!completedNames.has(s.name)));
   });
   return contextOutput('PostToolUse',`文档学习回执：${(await library.read()).sessions[key].current.receipt}。${JSON.stringify(skills)}`);
 }

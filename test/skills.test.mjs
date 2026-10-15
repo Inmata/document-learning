@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, mkdir, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Library } from '../src/library.mjs';
@@ -59,4 +59,13 @@ test('明确停用后不再自动重建，回退恢复正文和调用元数据',
   assert.equal((await library.read()).skills[name].status,'active');
   assert.equal(await fingerprint(published.path),original);
   assert.match(await readFile(join(published.path,'..','agents','openai.yaml'),'utf8'),/allow_implicit_invocation: true/);
+});
+
+test('个人库父路径是系统链接时仍能反复更新普通技能目录',async t=>{
+  const {library,root}=await fixture(t),alias=join(root,'library-alias');
+  await symlink(library.root,alias,process.platform==='win32'?'junction':'dir');
+  const linked=await Library.open(alias,{create:false});
+  await publishSkills(linked,[proposal('bag-guide')]);
+  const result=await publishSkills(linked,[{...proposal('bag-guide'),body:'读取本次步骤和实拍，按操作顺序组织；新增图片替换时检查全部引用。'}]);
+  assert.equal(result[0].status,'published');
 });

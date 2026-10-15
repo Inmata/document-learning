@@ -64,6 +64,21 @@ function normalizeRule(state, input) {
 export function mergeLearning(state, payload = {}) {
   addSources(state, payload.sources || []);
   const changes = [];
+  for(const revision of payload.revise || []) {
+    const old=state.rules.find(r=>r.id===revision.id && r.status==='active');
+    if(!old)throw new Error('修改目标不是有效经验');
+    if(revision.scopeBasis!=='explicit' || !['suggestion','default','required'].includes(revision.strength))throw new Error('强度变更必须来自明确重定义，不能由重复次数推断');
+    const evidence=verifyEvidence(state,revision.evidence);
+    if(evidence.some(e=>scopeMatch(old.scope,state.sources[e.source].context)==='no'))throw new Error('其他场景的例外不能改写此范围的执行强度');
+    const text=revision.text || old.text;
+    if(typeof text!=='string'||!text.trim()||text.length>6000)throw new Error('经验修订正文无效');
+    if(old.strength===revision.strength&&old.text===text)continue;
+    if(!evidence.some(e=>!old.evidence.some(ref=>stable(ref)===stable(e))))throw new Error('相同证据不能被重新解释成新的强度指令');
+    (old.revisions ||= []).push({from:old.strength,to:revision.strength,evidence});
+    old.strength=revision.strength;old.text=text;
+    for(const e of evidence)if(!old.evidence.some(ref=>stable(ref)===stable(e)))old.evidence.push(e);
+    changes.push({id:old.id,action:'revise-explicit'});
+  }
   for (const input of payload.rules || []) {
     const rule = normalizeRule(state, input);
     const old = state.rules.find(r => r.id === rule.id);
