@@ -1,0 +1,6 @@
+interface:
+  display_name: "文档持续学习"
+  short_description: "按适用条件复用文档经验，自动整理反馈、维护技能并回访历史资料"
+  default_prompt: "使用 $document-learning 检索本次文档适用的经验，并在完成后自动整理有依据的更新。"
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,12 @@
+{
+  "name": "document-learning",
+  "version": "0.1.0",
+  "description": "面向 Codex 和 Claude Code 的本地文档持续学习插件",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "engines": { "node": ">=24" },
+  "bin": { "document-learning": "bin/document-learning.mjs" },
+  "scripts": { "test": "node --test", "check": "node scripts/check-package.mjs", "demo": "node examples/demo.mjs" },
+  "files": ["bin/", "src/", "skills/", "hooks/", "plugin.json", ".codex-plugin/", ".claude-plugin/", "README.md", "LICENSE", "docs/", "examples/", "scripts/"]
+}
