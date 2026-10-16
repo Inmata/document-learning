@@ -21,7 +21,32 @@ node bin/document-learning.mjs doctor
 node bin/document-learning.mjs install --source-repository 'D:\自己的技能仓库'
 ```
 
-来源仓库只读，新技能始终写入个人库的 `skills/`，再为已安装的 Codex、Claude 建立个人入口。同名人工入口保留并报告冲突。旧 `--repository` 参数仍可用，但只表示学习来源；旧绑定自动备份并迁移，不再向来源仓库写回。
+来源仓库（`--source-repository`）只读。默认情况下，新技能写入个人库的 `skills/`，再为已安装的 Codex、Claude 建立个人入口；同名人工入口保留并报告冲突。
+
+如果希望用自己的 Git 私有仓库统一管理文档技能并跨设备同步长期文档经验，可以选用以下两种方式之一：
+
+1. **一键初始化新的纯文档技能与长期经验仓库**（可同时从旧仓库导入文档技能，自动排除编程技能与 `notes/`）：
+
+```powershell
+node bin/document-learning.mjs init-skill-repo --output 'D:\git-repo\document-skills' --import-from 'D:\git-repo\skills' --bind
+```
+
+2. **绑定已有的个人文档技能仓库**（或在另一台电脑克隆该仓库后绑定）：
+
+```powershell
+node bin/document-learning.mjs bind --skill-directory 'D:\git-repo\document-skills'
+node bin/document-learning.mjs sync-skills
+```
+
+绑定 `--skill-directory` 后，文档技能（含自动生成的技能内 `README.md`）与长期文档经验（`knowledge/index.md`、`cases/index.md`、`knowledge/memory.json`）保存在该 Git 仓库中供跨端同步；单机每轮聊天产生的临时会话状态（`sessions`）、事务快照（`versions/`）和原始大日志（`history/`）继续留在本地 `%LOCALAPPDATA%\DocumentLearning`，平时非文档聊天不会弄脏 Git 工作区。
+
+把该技能仓库关联到远端并推送（一键提交、创建或复用远端、并推送当前分支）：
+
+```powershell
+node bin/document-learning.mjs publish-repo
+```
+
+`publish-repo` 默认使用已绑定的 `--skill-directory`。已有远端时传 `--remote <地址>`；需要由 GitHub CLI 新建私有仓库时传 `--name 仓库名 [--owner 账号] [--visibility private]`。工作区有未提交改动时先自动提交，可用 `--no-commit` 关闭该行为。
 
 绑定属于当前用户，其他工作区使用同一个绑定。没有绑定时自动建立独立个人库。绑定已存在但路径丢失或无权读取时报告错误，保留待处理状态；不会悄悄建立第二个库。
 

@@ -1,10 +1,17 @@
-import {readFile,mkdir,symlink,readlink,unlink,rmdir,access,constants} from 'node:fs/promises';
+import {readFile,mkdir,symlink,readlink,unlink,rmdir,access,constants,readdir,cp} from 'node:fs/promises';
 import {homedir} from 'node:os';
-import {join,resolve} from 'node:path';
+import {join,resolve,basename} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {readJson,writeJson,atomicWrite,fingerprint,withLock,hash} from './io.mjs';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {readJson,writeJson,atomicWrite,fingerprint,withLock,hash,exists} from './io.mjs';
 import {dataRoot,resolveLibrary,bindLibrary,readBinding} from './library.mjs';
+import {migrateManagedSkills} from './skills.mjs';
+import {exportCatalog,renderRepoSkillTable} from './catalog.mjs';
 
+const exec=promisify(execFile);
+const docSkillTerms=/报告|文档|说明书|作业指导|图注|版式|母版|模板|合同|信函|提案|汇报|清洗|实验|现场|docx|pptx|xlsx|report|presentation|document|spreadsheet|contract|letter|proposal|\bsop\b|\bword\b|\bpowerpoint\b/i;
+const nonSkillDirs=new Set(['notes','docs','assets','scripts','tests','examples','history','cases','knowledge','versions','publish','skill-backups']);
 const root=fileURLToPath(new URL('../',import.meta.url));
 const quoteSh=s=>`'${s.replaceAll("'",`'"'"'`)}'`;
 const quotePs=s=>`'${s.replaceAll("'","''")}'`;
@@ -25,9 +32,13 @@ function removeOwned(config,commands) {
   }
   return next;
 }
-export async function install({base=dataRoot(),userHome=homedir(),agents=['codex','claude'],pluginRoot=root,repository}={}) {
-  const library=await resolveLibrary({base});
-  if(repository)await bindLibrary({base,library:library.root,skillRepository:repository});
+export async function install({base=dataRoot(),userHome=homedir(),agents=['codex','claude'],pluginRoot=root,repository,skillDirectory}={}) {
+  let library=await resolveLibrary({base,skillDirectory});
+  if(repository || skillDirectory)library=await bindLibrary({base,library:library.root,skillRepository:repository,skillDirectory});
+  if(skillDirectory) {
+    await migrateManagedSkills(library,{targetDirectory:library.skillDirectory});
+    await exportCatalog(library,{skillDirectory:library.skillDirectory});
+  }
   return withLock(join(base,'install'),async()=>{
     const registryPath=join(base,'installation.json'),registry=await readJson(registryPath,{schema:1,agents:{}});
     const results=[];
@@ -115,18 +126,25 @@ export async function doctor({base=dataRoot()}={}) {
   return {status:!writable?'library-read-only':agents.some(a=>a.hookTrust?.status==='needs-review'&&!a.callbackObserved)?'awaiting-hook-trust':'ready',library:library.root,revision:state.revision,ruleCount:state.rules.filter(r=>r.status==='active').length,archivedRuleCount:state.rules.filter(r=>r.status==='archived').length,skillCount:Object.keys(state.skills).length,deferredPublications:state.pendingPublications?.length || 0,binding,agents,note:'配置存在、宿主信任、真实 SessionStart 与完成回执分别报告。信任记录存在不代表当前定义哈希已经通过核对；以宿主审核和真实回调为准。'};
 }
 
-export async function syncPersonalSkills({base=dataRoot(),library}={}) {
+export async function syncPersonalSkills({base=dataRoot(),library,replaceTargets=[]}={}) {
   library ||= await resolveLibrary({base,create:false});
+  const binding=await readBinding(base);
+  const skillDir=resolve(binding?.skillDirectory || library.skillDirectory || join(library.root,'skills'));
+  const replaceableRoots=[resolve(library.root,'skills'),...replaceTargets.map(p=>resolve(p))];
   return withLock(join(base,'install'),async()=>{
     const registryPath=join(base,'installation.json'),registry=await readJson(registryPath,{agents:{}}),results=[];
+    const state=await library.read();
+    const managedSkills={...(skillDir!==resolve(library.root,'skills')?Object.fromEntries(Object.entries(state.sourceSkills || {}).filter(([,s])=>s.path&&resolve(s.path,'..','..')===skillDir)):{}),...(state.skills || {})};
     for(const [agent,record] of Object.entries(registry.agents)) {
       record.personalSkills ||= {};
-      for(const skill of Object.values((await library.read()).skills)) {
+      for(const skill of Object.values(managedSkills)) {
         const target=resolve(skill.path,'..');
-        if(target!==resolve(library.root,'skills',skill.name)) {results.push({agent,name:skill.name,status:'outside-personal-directory'});continue;}
+        if(target!==resolve(skillDir,skill.name)) {results.push({agent,name:skill.name,status:'outside-personal-directory'});continue;}
         const entry=join(record.entry,'..',skill.name);
         let actual=null;
         try {actual=resolve(await readlink(entry));}catch(error){if(error.code!=='ENOENT'){results.push({agent,name:skill.name,status:'name-conflict',entry});continue;}}
+        const canReplace=actual&&actual!==target&&(actual===resolve(record.personalSkills[skill.name]?.target || '')||replaceableRoots.some(r=>actual===resolve(r,skill.name)));
+        if(canReplace){await (process.platform==='win32'?rmdir(entry):unlink(entry));actual=null;}
         if(actual && actual!==target){results.push({agent,name:skill.name,status:'name-conflict',entry});continue;}
         if(skill.status==='retired') {
           if(actual===target&&record.personalSkills[skill.name]?.target===target)await (process.platform==='win32'?rmdir(entry):unlink(entry));
@@ -138,4 +156,122 @@ export async function syncPersonalSkills({base=dataRoot(),library}={}) {
     }
     await writeJson(registryPath,registry);return results;
   });
+}
+
+export async function initSkillRepository({output,base=dataRoot(),bind=false,importFrom=[]}={}) {
+  if(!output)throw new Error('init-skill-repo 需要 --output 目录');
+  const repoRoot=resolve(output);
+  await mkdir(join(repoRoot,'scripts'),{recursive:true});
+  await mkdir(join(repoRoot,'knowledge'),{recursive:true});
+  await mkdir(join(repoRoot,'cases'),{recursive:true});
+  const imported=[];
+  for(const sourceRepo of importFrom) {
+    const srcRoot=resolve(sourceRepo);
+    if(!(await exists(srcRoot)))continue;
+    for(const entry of await readdir(srcRoot,{withFileTypes:true})) {
+      if(!entry.isDirectory()||entry.name.startsWith('.')||nonSkillDirs.has(entry.name))continue;
+      const skillFile=join(srcRoot,entry.name,'SKILL.md');
+      if(!(await exists(skillFile)))continue;
+      const text=await readFile(skillFile,'utf8');
+      const desc=text.match(/^description:\s*(.*)$/m)?.[1] || '';
+      if(!docSkillTerms.test(desc))continue;
+      const dest=join(repoRoot,entry.name);
+      if(!(await exists(dest))) {
+        await cp(join(srcRoot,entry.name),dest,{recursive:true});
+        imported.push(entry.name);
+      }
+    }
+  }
+  if(!(await exists(join(repoRoot,'.gitignore')))) {
+    await atomicWrite(join(repoRoot,'.gitignore'),`.skills-backups/\n.test-output/\n.qa/\n.write-lock\n*.tmp\n`);
+  }
+  if(!(await exists(join(repoRoot,'.gitattributes')))) {
+    await atomicWrite(join(repoRoot,'.gitattributes'),`* text=auto eol=lf\n*.cmd text eol=crlf\n*.ps1 text eol=crlf\n*.docx binary\n*.pptx binary\n*.xlsx binary\n*.pdf binary\n*.png binary\n*.jpg binary\n*.jpeg binary\n*.ico binary\n`);
+  }
+  if(!(await exists(join(repoRoot,'CONTRIBUTING.md')))) {
+    await atomicWrite(join(repoRoot,'CONTRIBUTING.md'),`# 文档技能与长期经验仓库约定\n\n本仓库仅维护文档类技能与跨设备同步的长期文档经验，不混放编程技能或临时会话运行态。\n\n## 目录职责\n\n| 位置 | 职责 |\n| --- | --- |\n| \`<技能名>/SKILL.md\` | 模型入口：用途、必要约束、实际工作流程、按需读取参考资料及 \`document-learning\` 管理区 |\n| \`<技能名>/README.md\` | 使用者指南：适用范围、准备输入、可复制调用示例、流程与验收要点 |\n| \`<技能名>/agents/openai.yaml\` | 界面显示名、简介、默认提示及调用策略（显式或自动匹配） |\n| \`<技能名>/references/\` | 详细规则与说明（可选） |\n| \`<技能名>/assets/\` | 生成用模板、图片与示例素材（可选） |\n| \`<技能名>/scripts/\` | 结构检查与辅助脚本（可选） |\n| \`knowledge/index.md\` | 可阅读的长期文档经验、适用条件与原始引文 |\n| \`knowledge/memory.json\` | 供多设备自动同步的结构化长期经验与技能元数据（不含本机临时会话状态） |\n| \`cases/index.md\` | 具体案例事实与历史归档记录 |\n`);
+  }
+  if(!(await exists(join(repoRoot,'install.cmd')))) {
+    await atomicWrite(join(repoRoot,'install.cmd'),`@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\\install-skills.ps1" %*\r\n`);
+  }
+  if(!(await exists(join(repoRoot,'scripts','install-skills.ps1')))) {
+    await atomicWrite(join(repoRoot,'scripts','install-skills.ps1'),`[CmdletBinding(SupportsShouldProcess = $true)]\r\nparam([string]$UserProfilePath = $env:USERPROFILE)\r\n$ErrorActionPreference = 'Stop'\r\n$repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')).TrimEnd('\\')\r\n$profile = [IO.Path]::GetFullPath($UserProfilePath).TrimEnd('\\')\r\n$reserved = @('notes','docs','assets','scripts','tests','examples','history','cases','knowledge','versions','publish','skill-backups')\r\n$skills = Get-ChildItem -LiteralPath $repository -Directory | Where-Object { $reserved -notcontains $_.Name -and -not $_.Name.StartsWith('.') -and (Test-Path -LiteralPath (Join-Path $_.FullName 'SKILL.md') -PathType Leaf) }\r\n$hosts = @('.codex', '.claude', '.codeg', '.agents')\r\nforeach ($skill in $skills) {\r\n  foreach ($hostName in $hosts) {\r\n    $destParent = Join-Path (Join-Path $profile $hostName) 'skills'\r\n    $dest = Join-Path $destParent $skill.Name\r\n    if ($PSCmdlet.ShouldProcess($dest, "Link -> $($skill.FullName)")) {\r\n      New-Item -ItemType Directory -Path $destParent -Force | Out-Null\r\n      $existing = Get-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue\r\n      if ($null -ne $existing) {\r\n        if (($existing.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {\r\n          $currentTarget = [string]@($existing.Target)[0]\r\n          if (-not [string]::IsNullOrWhiteSpace($currentTarget) -and [IO.Path]::GetFullPath($currentTarget).TrimEnd('\\').Equals($skill.FullName.TrimEnd('\\'), [StringComparison]::OrdinalIgnoreCase)) { continue }\r\n          [IO.Directory]::Delete($dest)\r\n        } else { continue }\r\n      }\r\n      New-Item -ItemType Junction -Path $dest -Target $skill.FullName | Out-Null\r\n    }\r\n  }\r\n}\r\n`);
+  }
+  const readmePath=join(repoRoot,'README.md');
+  if(!(await exists(readmePath))) {
+    const emptyTable=renderRepoSkillTable({skills:{},sourceSkills:{}},repoRoot);
+    await atomicWrite(readmePath,`# 文档技能与长期经验库\n\n个人维护的文档类技能与跨端同步文档经验合集，由 \`document-learning\` 自动协同维护。\n\n## 文档技能一览\n\n${emptyTable}\n\n## 长期经验与案例索引\n\n- [个人文档经验目录](knowledge/index.md)：跨文档复用的制作方法、条件偏好与调用规则。\n- [案例与历史归档](cases/index.md)：单次任务的工艺参数、案例事实与历史归档记录。\n- [仓库结构与维护约定](CONTRIBUTING.md)：目录职责、文件标准与同步边界说明。\n\n## 多端同步与安装\n\n在另一台电脑克隆本仓库后，把 \`<本仓库克隆目录>\` 替换成实际路径，在 \`document-learning\` 目录运行：\n\n\`\`\`powershell\nnode bin/document-learning.mjs bind --skill-directory '<本仓库克隆目录>'\nnode bin/document-learning.mjs sync-skills\n\`\`\`\n\n或直接双击本仓库根目录的 \`install.cmd\` 建立宿主技能目录链接。\n`);
+  }
+  let gitInitialized=false;
+  try {
+    if(!(await exists(join(repoRoot,'.git')))) {
+      await exec('git',['init',repoRoot],{windowsHide:true});
+      gitInitialized=true;
+    }
+  }catch{}
+  let migrated=[],catalog=null,links=[];
+  if(bind) {
+    const currentLib=await resolveLibrary({base});
+    const library=await bindLibrary({base,library:currentLib.root,skillDirectory:repoRoot});
+    migrated=await migrateManagedSkills(library,{targetDirectory:repoRoot});
+    catalog=await exportCatalog(library,{skillDirectory:repoRoot});
+    links=await syncPersonalSkills({base,library,replaceTargets:importFrom});
+  }
+  return {repository:repoRoot,gitInitialized,imported,migrated,catalog,links};
+}
+
+async function gitRun(repo,args,{allowFailure=false,env}={}) {
+  try {
+    const {stdout,stderr}=await exec('git',['-C',repo,...args],{encoding:'utf8',windowsHide:true,maxBuffer:16*1024*1024,...(env?{env}:{})});
+    return {ok:true,stdout:String(stdout).trim(),stderr:String(stderr).trim()};
+  } catch(error) {
+    if(!allowFailure)throw new Error(`git ${args.join(' ')} 失败：${String(error.stderr || error.message).trim().slice(0,400)}`);
+    return {ok:false,stdout:String(error.stdout || '').trim(),stderr:String(error.stderr || error.message).trim()};
+  }
+}
+
+// One-step "publish to a private remote": commit local changes if needed, then either
+// create the GitHub repository through gh or reuse an explicit remote URL, and push.
+export async function publishRepository({directory,remote,name,owner,visibility='private',branch,message,commit=true,create=true}={}) {
+  const target=resolve(directory || '.');
+  const probe=await gitRun(target,['rev-parse','--show-toplevel'],{allowFailure:true});
+  if(!probe.ok)throw new Error(`不是 Git 仓库：${target}`);
+  const repoRoot=resolve(probe.stdout);
+  const detected=(await gitRun(repoRoot,['rev-parse','--abbrev-ref','HEAD'],{allowFailure:true})).stdout;
+  const targetBranch=branch || (detected && detected!=='HEAD' ? detected : 'main');
+  let committed=null;
+  const dirty=(await gitRun(repoRoot,['status','--porcelain=v1','--untracked-files=all'])).stdout;
+  if(dirty && commit) {
+    await gitRun(repoRoot,['add','-A']);
+    await gitRun(repoRoot,['-c','commit.gpgsign=false','-c','user.name=Document Learning','-c','user.email=document-learning@localhost','commit','-m',message || 'chore: sync document skills and long-term memory']);
+    committed=(await gitRun(repoRoot,['rev-parse','HEAD'])).stdout;
+  } else if(dirty) {
+    throw new Error('工作区存在未提交改动；使用默认提交行为或先手动提交后再推送');
+  }
+  let remoteUrl=remote || null,created=false;
+  if(!remoteUrl && create) {
+    const ghReady=await exec('gh',['auth','status'],{windowsHide:true}).then(()=>({ok:true})).catch(()=>({ok:false}));
+    if(!ghReady.ok)throw new Error('未检测到可用的 GitHub CLI 登录。先运行 gh auth login，或改用 --remote 指定已存在的远端地址。');
+    const login=(await exec('gh',['api','user','--jq','.login'],{encoding:'utf8',windowsHide:true})).stdout.trim();
+    const slug=`${owner || login}/${name || basename(repoRoot)}`;
+    const existing=await exec('gh',['repo','view',slug,'--json','url'],{encoding:'utf8',windowsHide:true}).then(result=>JSON.parse(result.stdout)).catch(()=>null);
+    if(existing?.url) {
+      remoteUrl=existing.url;
+    } else {
+      try {
+        await exec('gh',['repo','create',slug,`--${visibility}`,'--source',repoRoot,'--remote','origin','--push'],{encoding:'utf8',windowsHide:true});
+        created=true;
+        remoteUrl=(await gitRun(repoRoot,['remote','get-url','origin'])).stdout;
+        return {directory:repoRoot,remote:remoteUrl,branch:targetBranch,created,committed,pushed:true};
+      } catch(error) {
+        throw new Error(`创建远端仓库失败：${String(error.stderr || error.message).trim().slice(0,400)}`);
+      }
+    }
+  }
+  if(!remoteUrl)throw new Error('未提供远端地址，且未创建远端仓库');
+  const current=(await gitRun(repoRoot,['remote','get-url','origin'],{allowFailure:true}));
+  if(current.ok)await gitRun(repoRoot,['remote','set-url','origin',remoteUrl]);
+  else await gitRun(repoRoot,['remote','add','origin',remoteUrl]);
+  await gitRun(repoRoot,['push','-u','origin',`HEAD:refs/heads/${targetBranch}`]);
+  return {directory:repoRoot,remote:remoteUrl,branch:targetBranch,created,committed,pushed:true};
 }

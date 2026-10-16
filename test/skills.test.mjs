@@ -24,15 +24,18 @@ test('自动生成的技能自包含，非 PCB 对象仍匹配同一工艺',asyn
   const body=await readFile(result[0].path,'utf8');
   assert.match(body,/本次资料/);
   assert.match(await readFile(join(library.root,'skills','bag-ultrasonic-instructions','agents','openai.yaml'),'utf8'),/allow_implicit_invocation: true/);
+  assert.match(await readFile(join(library.root,'skills','bag-ultrasonic-instructions','README.md'),'utf8'),/<!-- document-learning:readme -->/);
 });
 test('修改现有技能只管理自己的区域，保留明确调用政策和手动正文',async t=>{
   const {library}=await fixture(t),repo=join(library.root,'skills');
   const folder=join(repo,'legacy-report');
   await mkdir(join(folder,'agents'),{recursive:true});
-  await writeFile(join(folder,'SKILL.md'),'---\nname: legacy-report\n---\n\n只有明确指定才调用。\n手动维护正文。\n');
+  await writeFile(join(folder,'SKILL.md'),'---\nname: legacy-report\ndescription: 仅在明确指定时整理正式实验报告\n---\n\n只有明确指定才调用。\n手动维护正文。\n');
+  await writeFile(join(folder,'README.md'),'# 手写使用指南\n');
   await writeFile(join(folder,'agents','openai.yaml'),'policy:\n  allow_implicit_invocation: false\n');
   await publishSkills(library,[proposal('legacy-report')],{repository:repo});
   assert.match(await readFile(join(folder,'SKILL.md'),'utf8'),/只有明确指定才调用。\n手动维护正文。/);
+  assert.equal(await readFile(join(folder,'README.md'),'utf8'),'# 手写使用指南\n');
   assert.equal(await readFile(join(folder,'agents','openai.yaml'),'utf8'),'policy:\n  allow_implicit_invocation: false\n');
   assert.equal((await library.read()).skills['legacy-report'].implicit,false);
   await writeFile(join(folder,'SKILL.md'),'用户在后面手动改过了');
@@ -44,6 +47,11 @@ test('无相近反例或无条件的 SOP 入口不能发布',async t=>{
   const {library}=await fixture(t);
   await assert.rejects(publishSkills(library,[{...proposal('sop'),scope:{}}]),/范围/);
   await assert.rejects(publishSkills(library,[{...proposal('bag-guide'),negative:[{kind:'instruction',process:'bag-ultrasonic'}]}]),/正反例/);
+  await assert.rejects(publishSkills(library,[proposal('notes')]),/保留目录名/);
+  const codingFolder=join(library.root,'skills','efficient-parallel-development');
+  await mkdir(codingFolder,{recursive:true});
+  await writeFile(join(codingFolder,'SKILL.md'),'---\nname: efficient-parallel-development\ndescription: 用于已有仓库中的协作开发：主模型规划，Worker 实施\n---\n\n# 协作开发\n');
+  await assert.rejects(publishSkills(library,[proposal('efficient-parallel-development')]),/不是文档技能/);
 });
 
 test('明确停用后不再自动重建，回退恢复正文和调用元数据',async t=>{

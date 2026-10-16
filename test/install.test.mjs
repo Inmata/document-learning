@@ -3,9 +3,14 @@ import assert from 'node:assert/strict';
 import {mkdtemp,rm,mkdir,writeFile,readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {install,uninstall,doctor} from '../src/install.mjs';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {install,uninstall,doctor,publishRepository} from '../src/install.mjs';
 import {readJson,writeJson} from '../src/io.mjs';
 import {resolveLibrary} from '../src/library.mjs';
+
+const run=promisify(execFile);
+const gitCommit=(cwd,args=[])=>run('git',['-c','commit.gpgsign=false','-c','user.name=Test','-c','user.email=test@localhost',...args],{cwd,windowsHide:true});
 
 test('安装重复执行不叠加 hooks，卸载保留原有 hooks、设置与个人库',async t=>{
   const dir=await mkdtemp(join(tmpdir(),'doc-install-'));t.after(()=>rm(dir,{recursive:true,force:true}));
@@ -34,4 +39,23 @@ test('已有同名人工技能时，安装不改宿主配置',async t=>{
   await writeFile(join(userHome,'.claude','skills','document-learning','SKILL.md'),'人工版本');
   await assert.rejects(install({base:join(dir,'data'),userHome,agents:['claude']}));
   assert.deepEqual(await readJson(path),{custom:'keep'});
+});
+
+test('publishRepository 自动提交未提交改动并推送到指定远端',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'doc-publish-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  const work=join(dir,'work'),bare=join(dir,'remote.git');
+  await mkdir(work,{recursive:true});
+  await run('git',['init','-b','main'],{cwd:work,windowsHide:true});
+  await writeFile(join(work,'README.md'),'# 文档技能\n');
+  await gitCommit(work,['add','-A']);
+  await gitCommit(work,['commit','-m','init']);
+  await run('git',['init','--bare',bare],{windowsHide:true});
+  // 故意留下未提交改动，验证一键推送会先提交
+  await writeFile(join(work,'README.md'),'# 文档技能与长期经验\n');
+  const result=await publishRepository({directory:work,remote:bare,create:false});
+  assert.equal(result.pushed,true);
+  assert.equal(result.branch,'main');
+  assert.ok(result.committed,'应产生一次本地提交');
+  assert.equal((await run('git',['-C',work,'status','--porcelain'],{windowsHide:true})).stdout.trim(),'');
+  assert.match((await run('git',['--git-dir',bare,'branch','--list'],{windowsHide:true})).stdout,/main/);
 });
