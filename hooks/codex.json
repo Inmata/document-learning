@@ -47,8 +47,7 @@
             "type": "command",
             "command": "node \"${PLUGIN_ROOT}/bin/document-learning.mjs\" hook --agent codex",
             "timeout": 10,
-            "commandWindows": "node \"$env:PLUGIN_ROOT/bin/document-learning.mjs\" hook --agent codex",
-            "additionalContextLimit": 2400
+            "commandWindows": "node \"$env:PLUGIN_ROOT/bin/document-learning.mjs\" hook --agent codex"
           }
         ]
       }
@@ -60,8 +59,7 @@
             "type": "command",
             "command": "node \"${PLUGIN_ROOT}/bin/document-learning.mjs\" hook --agent codex",
             "timeout": 10,
-            "commandWindows": "node \"$env:PLUGIN_ROOT/bin/document-learning.mjs\" hook --agent codex",
-            "additionalContextLimit": 2400
+            "commandWindows": "node \"$env:PLUGIN_ROOT/bin/document-learning.mjs\" hook --agent codex"
           }
         ]
       }
@@ -73,8 +71,7 @@
             "type": "command",
             "command": "node \"${PLUGIN_ROOT}/bin/document-learning.mjs\" hook --agent codex",
             "timeout": 10,
-            "commandWindows": "node \"$env:PLUGIN_ROOT/bin/document-learning.mjs\" hook --agent codex",
-            "additionalContextLimit": 2400
+            "commandWindows": "node \"$env:PLUGIN_ROOT/bin/document-learning.mjs\" hook --agent codex"
           }
         ]
       }
@@ -85,9 +82,8 @@
           {
             "type": "command",
             "command": "node \"${PLUGIN_ROOT}/bin/document-learning.mjs\" hook --agent codex",
-            "timeout": 10,
-            "commandWindows": "node \"$env:PLUGIN_ROOT/bin/document-learning.mjs\" hook --agent codex",
-            "additionalContextLimit": 2400
+            "timeout": 3,
+            "commandWindows": "node \"$env:PLUGIN_ROOT/bin/document-learning.mjs\" hook --agent codex"
           }
         ]
       }
@@ -98,9 +94,8 @@
           {
             "type": "command",
             "command": "node \"${PLUGIN_ROOT}/bin/document-learning.mjs\" hook --agent codex",
-            "timeout": 10,
-            "commandWindows": "node \"$env:PLUGIN_ROOT/bin/document-learning.mjs\" hook --agent codex",
-            "additionalContextLimit": 2400
+            "timeout": 3,
+            "commandWindows": "node \"$env:PLUGIN_ROOT/bin/document-learning.mjs\" hook --agent codex"
           }
         ]
       }

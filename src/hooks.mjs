@@ -7,8 +7,8 @@ import { publishSkills, retireSkills } from './skills.mjs';
 import {findTurn,claimRecovery,releaseRecovery,validRecovery,isTerminal as terminal} from './recovery.mjs';
 import {exportCatalog} from './catalog.mjs';
 
-const cli = fileURLToPath(new URL('../bin/document-learning.mjs',import.meta.url));
-const entry = fileURLToPath(new URL('../skills/document-learning/SKILL.md',import.meta.url));
+const cli = fileURLToPath(new URL('../bin/document-learning.mjs',import.meta.url)).replaceAll('\\','/');
+const entry = fileURLToPath(new URL('../skills/document-learning/SKILL.md',import.meta.url)).replaceAll('\\','/');
 export const sessionKey = (agent,id) => `${agent}-${hash(String(id)).slice(0,24)}`;
 function contextOutput(event,text) { return {hookSpecificOutput:{hookEventName:event,additionalContext:text}}; }
 
@@ -94,6 +94,7 @@ export async function handleHook(library, agent, event, { repository } = {}) {
       return {systemMessage:'文档学习本轮回执未完成，已保留待恢复状态。'};
     }
     await library.transact('receipt-repair',state => { state.sessions[key].current.repairCount++; });
+    if(terminal(turn)&&unfinishedRecovery)return {decision:'block',reason:`当前用户任务及本轮判断已完成，不要再次提交当前轮判断。现在只补一项已经认领的历史学习：运行 node ${JSON.stringify(cli)} recover --session ${key} --turn ${JSON.stringify(turn.id)} --token ${turn.token}；按返回的原始 session/turn/token、recoveryTicket 和 nextPhase 提交 signal。无需继续旧业务或增加审批；完成后按原请求结束。`};
     return {decision:'block',reason:`补齐文档学习回执一次：${guidance(key,turn)} 已判定为文档时提交 phase=complete；确无新经验则 rules=[]、skills=[]，并提供 skillDecision 的 action 与具体维护理由。完成后直接结束，不增加用户审批。`};
   }
   if (['PreCompact','PostCompact','SessionEnd','StopFailure','Interrupt'].includes(name)) {
@@ -130,7 +131,11 @@ export async function processSignal(library,key,packet,{repository,permissionMod
       } else addSources(state,[{id:t.source,role:'user',text:t.prompt || '（空需求）',origin:'conversation',task:context.task,context:t.context}]);
       t.receipt = 'in-progress';
     });
-    if (!packet.document) return {};
+    if (!packet.document) {
+      const t=findTurn(await library.read(),key,packet.turn);
+      if(t.recoveryTickets?.length)return contextOutput('PostToolUse',`当前轮次非文档，回执已完成。还需补一项已认领的历史学习，运行 node ${JSON.stringify(cli)} recover --session ${key} --turn ${JSON.stringify(t.id)} --token ${t.token}，按返回的原轮标识、recoveryTicket 和 nextPhase 提交 signal。只整理证据，不继续旧业务，不重复当前判断。`);
+      return {};
+    }
     const t = findTurn(await library.read(),key,packet.turn);
     const match = await retrieve(library,t.context);
     const available=Object.values({...((await library.read()).sourceSkills || {}),...(await library.read()).skills}).filter(s=>s.status!=='retired'&&(s.implicit!==false||t.prompt.includes(`$${s.name}`)));
@@ -164,7 +169,7 @@ export async function processSignal(library,key,packet,{repository,permissionMod
     t.receipt = skills.some(s=>s.status==='manual-change') ? 'pending-recovery' : ((packet.rules?.length || packet.revise?.length || packet.skills?.length || packet.retire?.length || packet.observations?.length || retired.length) ? 'complete' : 'no-new-learning');
     t.skillResults = skills;
     t.skillDecision=packet.skillDecision;
-    if(terminal(t))delete t.recoveryLease;
+    if(terminal(t)&&t.recoveryLease){const owner=findTurn(state,t.recoveryLease.ownerKey,t.recoveryLease.ownerTurn);if(owner)owner.recoveryTickets=owner.recoveryTickets?.filter(ticket=>ticket.id!==t.recoveryLease.ticket);delete t.recoveryLease;}
     const completedNames=new Set([...skills.filter(s=>s.status==='published').map(s=>s.name),...retired.map(s=>s.name)]);
     state.pendingPublications=(state.pendingPublications || []).filter(p=>p.task!==t.context.task || [...p.skills,...p.retireSkills].some(s=>!completedNames.has(s.name)));
   });

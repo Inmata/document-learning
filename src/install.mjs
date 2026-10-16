@@ -48,8 +48,8 @@ export async function install({base=dataRoot(),userHome=homedir(),agents=['codex
       catch(e){if(e.code!=='ENOENT')throw e;}
       const next=removeOwned(config,[...(old?.commands || []),command]);next.hooks ||= {};
       for(const event of events[agent]) {
-        const handler={type:'command',command,timeout:10};
-        if(agent==='codex')handler.additionalContextLimit=event==='PostToolUse'?8000:2400;
+        const handler={type:'command',command,timeout:agent==='codex'&&['SessionEnd','Interrupt'].includes(event)?3:10};
+        if(agent==='codex'&&['SessionStart','UserPromptSubmit','PostToolUse'].includes(event))handler.additionalContextLimit=event==='PostToolUse'?8000:2400;
         (next.hooks[event] ||= []).push({hooks:[handler]});
       }
       if(beforeHash)await atomicWrite(join(base,'install','backups',`${agent}-${beforeHash}.json`),await readFile(path,'utf8'));
