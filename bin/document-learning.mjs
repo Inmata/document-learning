@@ -19,6 +19,7 @@ import {recoveryInput} from '../src/recovery.mjs';
 const {values:options,positionals}=parseArgs({allowPositionals:true,options:{home:{type:'string'},library:{type:'string'},repository:{type:'string'},'source-repository':{type:'string'},'replace-history':{type:'string'},decision:{type:'string'},agent:{type:'string'},owner:{type:'string'},input:{type:'string',multiple:true},output:{type:'string'},context:{type:'string'},version:{type:'string'},name:{type:'string'},job:{type:'string'},provider:{type:'string'},expectations:{type:'string'},'replay-only':{type:'boolean',default:false},base64:{type:'string'},session:{type:'string'},turn:{type:'string'},token:{type:'string'},phase:{type:'string'},document:{type:'string'},task:{type:'string'},kind:{type:'string'},merge:{type:'boolean',default:true},help:{type:'boolean',default:false}}});
 const command=positionals[0] || 'help';
 const base=options.home || dataRoot();
+let activeHookEvent=null;
 async function stdin(){let text='';for await(const chunk of process.stdin){text+=chunk;if(text.length>16*1024*1024)throw new Error('输入超过 16MB');}return text;}
 async function input(){const file=options.input?.[0];return file&&file!=='-'?readJson(file):JSON.parse(await stdin());}
 const print=value=>process.stdout.write(`${JSON.stringify(value,null,command==='signal'?0:2)}\n`);
@@ -54,7 +55,8 @@ async function main(){
     print({...result,links:await syncPersonalSkills({base,library})});return;
   }
   if(command==='hook'){
-    const output=await handleHook(library,options.agent || 'codex',await input());
+    const event=await input();activeHookEvent=event.hook_event_name;
+    const output=await handleHook(library,options.agent || 'codex',event);
     if(Object.keys((await library.read()).skills).length)await syncPersonalSkills({base,library});print(output);return;
   }
   if(command==='query'){if(!options.context)throw new Error('query 需要 --context');print(await retrieve(library,await readJson(options.context)));return;}
@@ -77,6 +79,9 @@ async function main(){
   throw new Error(`未知命令：${command}`);
 }
 try {await main();}catch(error){
-  if(command==='hook'){print({systemMessage:`文档学习未完成：${error.message}`});process.exitCode=0;}
+  if(command==='hook'){
+    const message=`文档学习未完成：${error.message}。修正结构或引文后重交同一票据信号；scope 是对象，例如 {"task":"当前任务标识"}，不能写成字符串。未完成前不要宣称学习已保存，也不向用户输出内部治理状态。`;
+    print(['SessionStart','UserPromptSubmit','PostToolUse'].includes(activeHookEvent)?{hookSpecificOutput:{hookEventName:activeHookEvent,additionalContext:message}}:{systemMessage:message});process.exitCode=0;
+  }
   else{process.stderr.write(`文档学习：${error.message}\n`);process.exitCode=1;}
 }
