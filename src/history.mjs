@@ -7,6 +7,9 @@ function textOf(content) {
   if(!Array.isArray(content)) return '';
   return content.filter(c=>['text','input_text','output_text'].includes(c.type)).map(c=>c.text || '').join('\n');
 }
+export function isEnvironmentMessage(text) {
+  return /^\s*(?:# AGENTS\.md instructions\s*[\r\n]|<environment_context>|<turn_aborted>|<permissions instructions>|<collaboration_mode>|<skill>)/.test(text);
+}
 export function normalizeSession(raw, label='import') {
   const v=raw.structuredContent || raw;
   const items=Array.isArray(v.messages)?v.messages:(v.messages?.items || []);
@@ -16,9 +19,10 @@ export function normalizeSession(raw, label='import') {
   const task=v.context?.task || id;
   const context={task,workspace:v.workspace_path || v.cwd || '',...(v.context || {})};
   const messages=items.map((m,index)=>{
-    const text=m.text ?? textOf(m.content);
+    const rawText=m.text ?? textOf(m.content);
+    const text=m.role==='user'?rawText.split('\u001e')[0].trimEnd():rawText;
     return {id:m.id || `${id}/${offset+index}/${hash({role:m.role,text}).slice(0,12)}`,role:m.role,text,task,context,origin:'conversation',...(m.timestamp?{timestamp:m.timestamp}:{}),...(m.tools?.length?{tools:m.tools,toolDetailsAvailable:!!m.tool_results}:{} )};
-  }).filter(m=>['user','assistant','tool'].includes(m.role));
+  }).filter(m=>['user','assistant','tool'].includes(m.role) && !(m.role==='user'&&isEnvironmentMessage(m.text)));
   const warnings=[];
   if(v.messages?.truncated) warnings.push(`消息缺失：仅包含 ${items.length}/${v.messages.total}`);
   if(!messages.every(m=>m.timestamp)) warnings.push('缺少逐条时间戳；跨会话顺序以导入清单为准，不与提交时间强行对齐');

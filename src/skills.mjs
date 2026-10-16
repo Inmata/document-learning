@@ -20,21 +20,21 @@ export function validateSkillProposal(state, proposal) {
   return { ...proposal, scope, implicit: proposal.implicit !== false };
 }
 
-export async function publishSkills(library, proposals, { repository } = {}) {
+export async function publishSkills(library, proposals) {
   if (!proposals?.length) return [];
   return withLock(join(library.root, 'publish'), async () => {
     const state = await library.read();
     const checked = proposals.map(p => validateSkillProposal(state,p));
     const results = [];
     for (const p of checked) {
-      const root = repository ? resolve(repository) : join(library.root, 'skills');
+      const root = join(library.root, 'skills');
       await mkdir(root, { recursive: true });
       const folder = inside(root, p.name);
       // Existing junctions may target another authorized library, but publication never follows them implicitly.
       try { if ((await lstat(folder)).isSymbolicLink()) throw new Error('技能目录是链接，请绑定真实仓库路径'); }
       catch (e) { if (e.code !== 'ENOENT') throw e; }
       const path = join(folder, 'SKILL.md');
-      const prepared=await prepareCommit(repository,[path,join(folder,'agents','openai.yaml')]);
+      const prepared=await prepareCommit(root,[path,join(folder,'agents','openai.yaml')]);
       const previous = state.skills[p.name];
       if(previous?.status==='retired'){results.push({name:p.name,status:'skip-retired',path});continue;}
       const currentHash = await fingerprint(path);
@@ -45,7 +45,7 @@ export async function publishSkills(library, proposals, { repository } = {}) {
       const yaml = join(folder,'agents','openai.yaml');
       const existingYaml = await fingerprint(yaml) ? await readFile(yaml,'utf8') : '';
       const frontmatter=old.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] || '';
-      const explicitOnly = /^\s*allow_implicit_invocation:\s*false\s*(?:#.*)?$/m.test(existingYaml) || /^disable-model-invocation:\s*true\s*$/m.test(frontmatter);
+      const explicitOnly = state.sourceSkills?.[p.name]?.implicit===false || /^\s*allow_implicit_invocation:\s*false\s*(?:#.*)?$/m.test(existingYaml) || /^disable-model-invocation:\s*true\s*$/m.test(frontmatter);
       const implicit = p.implicit && !explicitOnly;
       if (old.includes(start) !== old.includes(end) || old.split(start).length > 2 || old.split(end).length > 2) throw new Error('技能管理区标记损坏');
       const rules = (p.ruleIds || []).map(id => state.rules.find(r => r.id === id));

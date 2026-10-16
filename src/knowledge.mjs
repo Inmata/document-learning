@@ -56,7 +56,7 @@ function normalizeRule(state, input) {
     const explicit = input.scopeBasis === 'explicit' && evidence.some(e => /以后|今后|所有|一律|默认|这种|这类|always|all reports|by default|these reports/i.test(e.quote));
     if (!explicit) throw new Error('偏好扩大范围必须有明确表达范围的原始证据');
   }
-  for (const s of sources) if (scopeMatch(scope, { ...s.context, task: s.task || s.context.task }) === 'no') throw new Error('经验范围与证据场景矛盾');
+  for (const s of sources) if (scopeMatch(scope, { ...s.context, task: s.task || s.context.task }) === 'no') throw new Error(`经验范围与证据场景矛盾：${input.key} / ${s.id}`);
   const rule = { key: input.key, value: input.value, text: input.text.trim(), category: input.category, strength: input.strength, scope, scopeBasis: input.scopeBasis || 'context', evidence, status: 'active', maturity: 'observed' };
   rule.id = hash({ key: rule.key, value: rule.value, scope, category: rule.category }).slice(0,24);
   return rule;
@@ -137,7 +137,9 @@ export async function retrieve(library, context, { limit = 30 } = {}) {
   }
   const transfer=matches.filter(x=>x.match==='no'&&x.rule.category==='method'&&x.rule.scope.task&&x.rule.scope.task!==context.task).map(x=>x.rule).filter(r=>{
     const {task,...remaining}=r.scope;
-    return scopeMatch(remaining,context)!=='no';
-  }).slice(0,4).map(r=>({...r,strength:'suggestion',requiresAdaptation:true,originalScope:r.scope}));
+    // A task-only method has no evidence about its transfer boundary. Do not
+    // recommend it to every document simply because it was inserted first.
+    return Object.keys(remaining).some(k=>!['workspace','customer','template'].includes(k)) && scopeMatch(remaining,context)==='yes';
+  }).sort((a,b)=>Object.keys(b.scope).length-Object.keys(a.scope).length || a.key.localeCompare(b.key)).slice(0,4).map(r=>({...r,strength:'suggestion',requiresAdaptation:true,originalScope:r.scope}));
   return { apply: apply.slice(0,limit), conflicts, transfer, uncertain: matches.filter(x => x.match === 'unknown').map(x => x.rule).slice(0,limit), omitted: Math.max(0, apply.length - limit) };
 }

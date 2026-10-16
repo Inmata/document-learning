@@ -26,7 +26,7 @@ test('自动生成的技能自包含，非 PCB 对象仍匹配同一工艺',asyn
   assert.match(await readFile(join(library.root,'skills','bag-ultrasonic-instructions','agents','openai.yaml'),'utf8'),/allow_implicit_invocation: true/);
 });
 test('修改现有技能只管理自己的区域，保留明确调用政策和手动正文',async t=>{
-  const {library,root}=await fixture(t),repo=join(root,'repo');
+  const {library}=await fixture(t),repo=join(library.root,'skills');
   const folder=join(repo,'legacy-report');
   await mkdir(join(folder,'agents'),{recursive:true});
   await writeFile(join(folder,'SKILL.md'),'---\nname: legacy-report\n---\n\n只有明确指定才调用。\n手动维护正文。\n');

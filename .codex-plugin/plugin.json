@@ -1,8 +1,7 @@
 {
   "name": "document-learning",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "跨工作区复用文档经验，自动维护个人规则与技能，支持历史回放。",
   "skills": "./skills/",
   "hooks": "./hooks/codex.json"
 }
-

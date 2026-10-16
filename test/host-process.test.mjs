@@ -27,7 +27,7 @@ for(const agent of ['codex','claude'])test(`${agent} 原生 JSON 协议完整经
   const send=async packet=>hook('PostToolUse',{tool_name:'Bash',tool_response:{output:JSON.stringify(await invoke(base,['signal'],{session:key,turn:turn.id,token:turn.token,...packet}))}});
   await send({phase:'begin',document:true,context:{task:'fixture',kind:'report'}});
   const source=(await lib.read()).sessions[key].current.source;
-  await send({phase:'complete',rules:[{key:'figure.caption',value:'none',text:'本次不加图注',category:'preference',strength:'required',scope:{task:'fixture'},evidence:[{source,quote:'本次不加图注'}]}]});
+  await send({phase:'complete',skillDecision:{action:'no-change',reason:'仅当前报告的局部图注偏好，无独立新制作流程'},rules:[{key:'figure.caption',value:'none',text:'本次不加图注',category:'preference',strength:'required',scope:{task:'fixture'},evidence:[{source,quote:'本次不加图注'}]}]});
   assert.deepEqual(await hook('Stop'),{});
   const state=await lib.read();assert.equal(state.rules.length,1);assert.equal(state.sessions[key].current.receipt,'complete');
 });

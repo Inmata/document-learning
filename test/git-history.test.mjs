@@ -19,8 +19,10 @@ test('从混合仓库过滤无关提交，保留混合提交的文档部分与�
   await writeFile(join(root,'notes','tool.ps1'),'Write-Output tool');await git('add','.');await commit('unrelated tool');
   await writeFile(join(root,'site-report','SKILL.md'),'---\nname: site-report\ndescription: 创建现场报告文档\n---\n增加图注核对\n');
   await writeFile(join(root,'notes','tool.ps1'),'Write-Output other');await git('add','.');await commit('mixed');
+  await writeFile(join(root,'README.md'),'三份使用指南涵盖报告准备、修改和最终验收。\n');await git('add','.');await commit('initial navigation');
+  await writeFile(join(root,'README.md'),'各份使用指南涵盖报告准备、修改和最终验收。\n新增终端语言设置工具。\n');await git('add','.');await commit('unrelated config and catalog count');
   const result=await scanGit(root);
-  assert.equal(result.commits.length,3);assert.equal(result.commits[1].relevant,false);
+  assert.equal(result.commits.length,5);assert.equal(result.commits[1].relevant,false);assert.equal(result.commits[4].relevant,false);
   assert.equal(result.commits[2].selected.length,1);assert.equal(result.commits[2].excluded.length,1);
   assert.match(result.baseline.files[0].text,/初始内容/);assert.doesNotMatch(result.baseline.files[0].text,/增加图注/);
   assert.match(result.actual.files[0].text,/增加图注/);

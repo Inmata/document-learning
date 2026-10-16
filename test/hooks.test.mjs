@@ -26,7 +26,7 @@ for(const agent of ['codex','claude']) {
     const {library,base,key,submit}=await setup(t,agent);
     const result=await submit({phase:'begin',document:true,context:{task:'a',kind:'report'}});
     assert.match(result.hookSpecificOutput.additionalContext,/source/);
-    await submit({phase:'complete',rules:[],skills:[]});
+    await submit({phase:'complete',rules:[],skills:[],skillDecision:{action:'no-change',reason:'本轮仅有当前报告的局部图注选择，未形成新的独立制作流程'}});
     assert.deepEqual(await handleHook(library,agent,{...base,hook_event_name:'Stop'}),{});
     await handleHook(library,agent,{...base,hook_event_name:'SessionStart',source:'compact'});
     assert.equal((await library.read()).sessions[key].current.receipt,'no-new-learning');
@@ -48,8 +48,14 @@ test('只计划时保存候选，不发布技能文件或在 Stop 强迫实施',
   const {library,base,key,submit}=await setup(t);
   await submit({phase:'begin',document:true,context:{task:'a',kind:'report',mode:'plan'}});
   const source=(await library.read()).sessions[key].current.source;
-  await submit({phase:'complete',skills:[{name:'draft-only',description:'计划期候选',body:'保留为计划，尚未实施。',scope:{kind:'report'},evidence:[{source,quote:'本次不要图注'}],positive:[{kind:'report'}],negative:[{kind:'instruction'}]}]});
+  await submit({phase:'complete',skillDecision:{action:'create',reason:'保存已整理的计划期候选，未发布正式技能'},skills:[{name:'draft-only',description:'计划期候选',body:'保留为计划，尚未实施。',scope:{kind:'report'},evidence:[{source,quote:'本次不要图注'}],positive:[{kind:'report'}],negative:[{kind:'instruction'}]}]});
   const state=await library.read();assert.equal(Object.keys(state.skills).length,0);assert.equal(state.pendingPublications.length,1);
   assert.equal(state.sessions[key].current.publication,'deferred-plan-mode');
   assert.deepEqual(await handleHook(library,'codex',{...base,hook_event_name:'Stop'}),{});
+});
+
+test('空数组不能绕过完成前的技能覆盖与维护判断',async t=>{
+ const {submit,library,key}=await setup(t);await submit({phase:'begin',document:true,context:{task:'a',kind:'report'}});
+ await assert.rejects(submit({phase:'complete',rules:[],skills:[]}),/skillDecision/);
+ assert.equal((await library.read()).sessions[key].current.receipt,'in-progress');
 });

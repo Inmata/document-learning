@@ -82,14 +82,15 @@ test('用户明确的个人默认可以全局保存，单份报告的例外不�
 
 test('尚未晋升的局部方法能作为跨对象类比检索，偏好和参数不随之迁移',async t=>{
   const lib=await fixture(t),s=source('a','操作按真实顺序组织。本次图片下方保留图注。','pcb');
+  s.context.kind='instruction';
   await applyLearning(lib,{sources:[s],rules:[
-    {key:'instruction.order',value:'actual',text:'按真实顺序组织',category:'method',strength:'required',scope:{task:'pcb'},evidence:[{source:'a',quote:'操作按真实顺序组织'}]},
+    {key:'instruction.order',value:'actual',text:'按真实顺序组织',category:'method',strength:'required',scope:{task:'pcb',kind:'instruction'},evidence:[{source:'a',quote:'操作按真实顺序组织'}]},
     rule('a','本次图片下方保留图注。','pcb')
   ]});
   const result=await retrieve(lib,{task:'metal',kind:'instruction'});
   assert.equal(result.apply.length,0);assert.equal(result.transfer.length,1);
   assert.equal(result.transfer[0].strength,'suggestion');assert.equal(result.transfer[0].requiresAdaptation,true);
-  assert.equal((await lib.read()).rules[0].strength,'required');assert.deepEqual((await lib.read()).rules[0].scope,{task:'pcb'});
+  assert.equal((await lib.read()).rules[0].strength,'required');assert.deepEqual((await lib.read()).rules[0].scope,{task:'pcb',kind:'instruction'});
 });
 
 test('明确重定义可以单独降低执行强度，重复或别的报告不能改写它',async t=>{

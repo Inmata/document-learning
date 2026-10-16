@@ -62,14 +62,28 @@ export async function resolveLibrary({ base = dataRoot(), root, create = true } 
   await withLock(base, async () => {
     const other = await readJson(join(base, 'binding.json'), null);
     if (other && resolve(other.library) !== lib.root) throw new Error('个人库绑定发生并发变化');
-    if (!other) await writeJson(join(base, 'binding.json'), { schema: 1, library: lib.root, skillRepository: null });
+    if (!other) await writeJson(join(base, 'binding.json'), { schema: 2, library: lib.root, sourceRepositories: [], skillDirectory: join(lib.root,'skills') });
   });
   return lib;
 }
 
-export async function bindLibrary({ base = dataRoot(), library, skillRepository = null }) {
+export async function readBinding(base = dataRoot()) {
+  const path=join(base,'binding.json'),old=await readJson(path,null);
+  if(!old)return null;
+  if(old.schema===2)return old;
+  const binding={schema:2,library:old.library,sourceRepositories:old.skillRepository?[old.skillRepository]:[],skillDirectory:join(old.library,'skills')};
+  await withLock(base,async()=>{
+    const latest=await readJson(path,null);if(latest?.schema===2)return;
+    if(hash(latest)!==hash(old))throw new Error('迁移期间个人库绑定变化');
+    await writeJson(join(base,'install','backups',`binding-v1-${hash(old).slice(0,12)}.json`),old);
+    await writeJson(path,binding);
+  });
+  return binding;
+}
+
+export async function bindLibrary({ base = dataRoot(), library, skillRepository = null, sourceRepositories = skillRepository?[skillRepository]:[] }) {
   const lib = await Library.open(library);
-  if (skillRepository) await access(skillRepository, constants.R_OK);
-  await withLock(base, () => writeJson(join(base, 'binding.json'), { schema: 1, library: lib.root, skillRepository: skillRepository ? resolve(skillRepository) : null }));
+  for(const repo of sourceRepositories)await access(repo,constants.R_OK);
+  await withLock(base, () => writeJson(join(base, 'binding.json'), { schema: 2, library: lib.root, sourceRepositories:sourceRepositories.map(p=>resolve(p)),skillDirectory:join(lib.root,'skills') }));
   return lib;
 }

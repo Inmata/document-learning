@@ -3,7 +3,7 @@ import {homedir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {readJson,writeJson,atomicWrite,fingerprint,withLock,hash} from './io.mjs';
-import {dataRoot,resolveLibrary,bindLibrary} from './library.mjs';
+import {dataRoot,resolveLibrary,bindLibrary,readBinding} from './library.mjs';
 
 const root=fileURLToPath(new URL('../',import.meta.url));
 const quoteSh=s=>`'${s.replaceAll("'",`'"'"'`)}'`;
@@ -49,7 +49,7 @@ export async function install({base=dataRoot(),userHome=homedir(),agents=['codex
       const next=removeOwned(config,[...(old?.commands || []),command]);next.hooks ||= {};
       for(const event of events[agent]) {
         const handler={type:'command',command,timeout:10};
-        if(agent==='codex')handler.additionalContextLimit=2000;
+        if(agent==='codex')handler.additionalContextLimit=event==='PostToolUse'?8000:2400;
         (next.hooks[event] ||= []).push({hooks:[handler]});
       }
       if(beforeHash)await atomicWrite(join(base,'install','backups',`${agent}-${beforeHash}.json`),await readFile(path,'utf8'));
@@ -88,7 +88,7 @@ export async function uninstall({base=dataRoot(),agents}={}) {
   });
 }
 export async function doctor({base=dataRoot()}={}) {
-  const binding=await readJson(join(base,'binding.json'),null),installation=await readJson(join(base,'installation.json'),{agents:{}});
+  const binding=await readBinding(base),installation=await readJson(join(base,'installation.json'),{agents:{}});
   if(!binding)return {status:'not-initialized',base};
   let library;
   try {library=await resolveLibrary({base,create:false});}catch(error){return {status:'binding-unavailable',binding,error:error.message};}
@@ -98,9 +98,34 @@ export async function doctor({base=dataRoot()}={}) {
     const config=await readJson(record.path,{});
     const active=Object.values(state.sessions).filter(s=>s.agent===agent);
     const configured=events[agent].every(event=>config.hooks?.[event]?.some(g=>g.hooks?.some(h=>record.commands.includes(h.command))));
-    agents.push({agent,configured,callbackObserved:active.length>0,lastStart:active.map(s=>s.lastStart).filter(Boolean).sort().at(-1)||null,pending:active.filter(s=>s.current&&!['complete','not-document','no-new-learning'].includes(s.current.receipt)).length});
+    agents.push({agent,configured,callbackObserved:active.length>0,lastStart:active.map(s=>s.lastStart).filter(Boolean).sort().at(-1)||null,pending:active.reduce((n,s)=>n+[s.current,...(s.pending || [])].filter(t=>t&&!['complete','not-document','no-new-learning'].includes(t.receipt)).length,0)});
   }
   let writable=true;
   try {await access(library.root,constants.W_OK);}catch{writable=false;}
   return {status:writable?'ready':'library-read-only',library:library.root,revision:state.revision,ruleCount:state.rules.length,skillCount:Object.keys(state.skills).length,deferredPublications:state.pendingPublications?.length || 0,binding,agents,note:'配置存在、回调发生、模型完成回执分别报告。进程权限仍以实际写入结果为准。'};
+}
+
+export async function syncPersonalSkills({base=dataRoot(),library}={}) {
+  library ||= await resolveLibrary({base,create:false});
+  return withLock(join(base,'install'),async()=>{
+    const registryPath=join(base,'installation.json'),registry=await readJson(registryPath,{agents:{}}),results=[];
+    for(const [agent,record] of Object.entries(registry.agents)) {
+      record.personalSkills ||= {};
+      for(const skill of Object.values((await library.read()).skills)) {
+        const target=resolve(skill.path,'..');
+        if(target!==resolve(library.root,'skills',skill.name)) {results.push({agent,name:skill.name,status:'outside-personal-directory'});continue;}
+        const entry=join(record.entry,'..',skill.name);
+        let actual=null;
+        try {actual=resolve(await readlink(entry));}catch(error){if(error.code!=='ENOENT'){results.push({agent,name:skill.name,status:'name-conflict',entry});continue;}}
+        if(actual && actual!==target){results.push({agent,name:skill.name,status:'name-conflict',entry});continue;}
+        if(skill.status==='retired') {
+          if(actual===target&&record.personalSkills[skill.name]?.target===target)await (process.platform==='win32'?rmdir(entry):unlink(entry));
+          delete record.personalSkills[skill.name];continue;
+        }
+        if(!actual){await mkdir(join(entry,'..'),{recursive:true});await symlink(target,entry,process.platform==='win32'?'junction':'dir');}
+        record.personalSkills[skill.name]={entry,target};results.push({agent,name:skill.name,status:'linked',entry});
+      }
+    }
+    await writeJson(registryPath,registry);return results;
+  });
 }

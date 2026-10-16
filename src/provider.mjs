@@ -11,6 +11,7 @@ export const learnerInstructions=`你是本地文档经验整理器。输入是�
 经验有 key、value、text、category(method/preference/fact/constraint/policy)、strength(suggestion/default/required)、scope(已知条件)、evidence([{source:原始用户消息ID,quote:逐字原文}])。同一选择维度必须复用已有 key，相反选择用不同 value，不能另造 key 躲开冲突；value 用简短稳定的选择值。先检查已有规则，重复反馈合并证据，不重新表述成多条近义规则。
 只从原始用户表达抽取，不把助手建议、沉默、提交次数当作认可。事实限 scope.task；偏好默认限当前任务，扩大范围需 scopeBasis=explicit 且引文明确表达以后/这类等范围。方法可按用途条件复用。能机械检查不意味着普遍正确。当前请求优先，单次例外不撤销其他场景，不用频次决定审美。用户明确重定义已有规则的执行强度时可用 revise（id、strength、scopeBasis=explicit、evidence，可选 text）；普通重复或其他场景的例外不能修改旧规则的强度。
 context 至少含当前 task 和 kind；task 采用输入给定的标识。未知条件不编造。证据不充分放 observations。retire 默认空，仅明确撤销相同范围旧要求时使用。
+mode=current-material-backfill 时综合全部已提供资料，不声称无未来信息回放；repository.sources 中的原文可作为 policy 的证据，其他类别仍引用原始用户。现有完整技能与其 references 先用于判断覆盖，后续 diff 用来理解实际演变，不将旧删除行当现行规范。方法提炼到用途 kind/process，偏好保留任务条件，临时执行状态不作长期规范。
 skills 只在形成完整独立可执行流程时生成；普通偏好和一次版式修正不建技能。每项含 name/title/description/body/scope/evidence/positive/negative/ruleIds；scope 必须让所有 positive 命中、所有相近 negative 不命中。正文自包含，参数来自新任务，不将一次清洗泛化为所有 SOP。保留已有技能实际的调用政策。ruleIds 引用已知 id，不填 key；新经验的 id 尚未知时留空。找不到足够依据时所有学习数组可以为空。`;
 
 export function claudeCommand() {
