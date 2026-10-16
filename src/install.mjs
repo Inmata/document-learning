@@ -230,6 +230,19 @@ async function gitRun(repo,args,{allowFailure=false,env}={}) {
   }
 }
 
+const ansiPattern=/\u001b\[[0-9;?]*[A-Za-z]/g;
+// gh inherits FORCE_COLOR in some terminals and then emits ANSI codes even through a pipe,
+// which would break JSON parsing; strip colour and force plain output for every call.
+async function ghRun(args,{allowFailure=false}={}) {
+  try {
+    const {stdout,stderr}=await exec('gh',args,{encoding:'utf8',windowsHide:true,maxBuffer:16*1024*1024,env:{...process.env,NO_COLOR:'1',FORCE_COLOR:'0'}});
+    return {ok:true,stdout:String(stdout).replace(ansiPattern,'').trim(),stderr:String(stderr).replace(ansiPattern,'').trim()};
+  } catch(error) {
+    if(!allowFailure)throw new Error(`gh ${args.join(' ')} 失败：${String(error.stderr || error.message).replace(ansiPattern,'').trim().slice(0,400)}`);
+    return {ok:false,stdout:String(error.stdout || '').replace(ansiPattern,'').trim(),stderr:String(error.stderr || error.message).replace(ansiPattern,'').trim()};
+  }
+}
+
 // One-step "publish to a private remote": commit local changes if needed, then either
 // create the GitHub repository through gh or reuse an explicit remote URL, and push.
 export async function publishRepository({directory,remote,name,owner,visibility='private',branch,message,commit=true,create=true}={}) {
@@ -250,22 +263,25 @@ export async function publishRepository({directory,remote,name,owner,visibility=
   }
   let remoteUrl=remote || null,created=false;
   if(!remoteUrl && create) {
-    const ghReady=await exec('gh',['auth','status'],{windowsHide:true}).then(()=>({ok:true})).catch(()=>({ok:false}));
+    const ghReady=await ghRun(['auth','status'],{allowFailure:true});
     if(!ghReady.ok)throw new Error('未检测到可用的 GitHub CLI 登录。先运行 gh auth login，或改用 --remote 指定已存在的远端地址。');
-    const login=(await exec('gh',['api','user','--jq','.login'],{encoding:'utf8',windowsHide:true})).stdout.trim();
+    const login=(await ghRun(['api','user','--jq','.login'])).stdout;
     const slug=`${owner || login}/${name || basename(repoRoot)}`;
-    const existing=await exec('gh',['repo','view',slug,'--json','url'],{encoding:'utf8',windowsHide:true}).then(result=>JSON.parse(result.stdout)).catch(()=>null);
-    if(existing?.url) {
-      remoteUrl=existing.url;
-    } else {
-      try {
-        await exec('gh',['repo','create',slug,`--${visibility}`,'--source',repoRoot,'--remote','origin','--push'],{encoding:'utf8',windowsHide:true});
+    const existing=await ghRun(['repo','view',slug,'--json','url'],{allowFailure:true});
+    if(existing.ok) {
+      try { remoteUrl=JSON.parse(existing.stdout).url; } catch { remoteUrl=null; }
+    }
+    if(!remoteUrl) {
+      const creation=await ghRun(['repo','create',slug,`--${visibility}`,'--source',repoRoot,'--remote','origin','--push'],{allowFailure:true});
+      if(creation.ok) {
         created=true;
         remoteUrl=(await gitRun(repoRoot,['remote','get-url','origin'])).stdout;
         return {directory:repoRoot,remote:remoteUrl,branch:targetBranch,created,committed,pushed:true};
-      } catch(error) {
-        throw new Error(`创建远端仓库失败：${String(error.stderr || error.message).trim().slice(0,400)}`);
       }
+      // The name may already be taken, including by this account; reuse it instead of failing.
+      const again=await ghRun(['repo','view',slug,'--json','url'],{allowFailure:true});
+      if(!again.ok)throw new Error(`创建远端仓库失败：${creation.stderr}`);
+      remoteUrl=JSON.parse(again.stdout).url;
     }
   }
   if(!remoteUrl)throw new Error('未提供远端地址，且未创建远端仓库');
