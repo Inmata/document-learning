@@ -17,6 +17,7 @@ test('安装重复执行不叠加 hooks，卸载保留原有 hooks、设置与�
     const value=await readJson(path);assert.equal(value.model,'custom');assert.equal(value.hooks.SessionStart.length,2);assert.equal(value.hooks.PreToolUse[0].hooks[0].command,'other-hook');
   }
   const health=await doctor({base});assert.equal(health.agents.every(a=>a.configured&&!a.callbackObserved),true);
+  assert.equal(health.status,'awaiting-hook-trust');assert.equal(health.agents.find(a=>a.agent==='codex').hookTrust.status,'needs-review');
   await uninstall({base});assert.deepEqual(await readJson(join(userHome,'.claude','settings.json')),old);
   assert.equal((await resolveLibrary({base,create:false})).root,join(base,'library'));
 });

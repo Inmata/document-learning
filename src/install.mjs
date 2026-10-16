@@ -98,11 +98,21 @@ export async function doctor({base=dataRoot()}={}) {
     const config=await readJson(record.path,{});
     const active=Object.values(state.sessions).filter(s=>s.agent===agent);
     const configured=events[agent].every(event=>config.hooks?.[event]?.some(g=>g.hooks?.some(h=>record.commands.includes(h.command))));
-    agents.push({agent,configured,callbackObserved:active.length>0,lastStart:active.map(s=>s.lastStart).filter(Boolean).sort().at(-1)||null,pending:active.reduce((n,s)=>n+[s.current,...(s.pending || [])].filter(t=>t&&!['complete','not-document','no-new-learning'].includes(t.receipt)).length,0)});
+    let hookTrust;
+    if(agent==='codex') {
+      let settings='';try{settings=await readFile(join(record.path,'..','config.toml'),'utf8');}catch(error){if(error.code!=='ENOENT')throw error;}
+      const missing=[];
+      for(const [event,groups]of Object.entries(config.hooks || {}))for(const [groupIndex,group]of groups.entries())for(const [handlerIndex,handler]of (group.hooks || []).entries())if(record.commands.includes(handler.command)) {
+        const eventKey=event.replace(/([a-z0-9])([A-Z])/g,'$1_$2').toLowerCase(),id=`${record.path}:${eventKey}:${groupIndex}:${handlerIndex}`;
+        if(!settings.includes(`[hooks.state.'${id}']`)&&!settings.includes(`[hooks.state.${JSON.stringify(id)}]`))missing.push(event);
+      }
+      hookTrust={status:missing.length?'needs-review':'record-present-unverified',missing,nextStep:'在原生 Codex 中输入 /hooks，审核并信任文档学习条目；程序不修改信任。'};
+    }
+    agents.push({agent,configured,callbackObserved:active.some(s=>!!s.lastStart),lastStart:active.map(s=>s.lastStart).filter(Boolean).sort().at(-1)||null,pending:active.reduce((n,s)=>n+[s.current,...(s.pending || [])].filter(t=>t&&!['complete','not-document','no-new-learning'].includes(t.receipt)).length,0),...(hookTrust?{hookTrust}:{})});
   }
   let writable=true;
   try {await access(library.root,constants.W_OK);}catch{writable=false;}
-  return {status:writable?'ready':'library-read-only',library:library.root,revision:state.revision,ruleCount:state.rules.length,skillCount:Object.keys(state.skills).length,deferredPublications:state.pendingPublications?.length || 0,binding,agents,note:'配置存在、回调发生、模型完成回执分别报告。进程权限仍以实际写入结果为准。'};
+  return {status:!writable?'library-read-only':agents.some(a=>a.hookTrust?.status==='needs-review'&&!a.callbackObserved)?'awaiting-hook-trust':'ready',library:library.root,revision:state.revision,ruleCount:state.rules.filter(r=>r.status==='active').length,archivedRuleCount:state.rules.filter(r=>r.status==='archived').length,skillCount:Object.keys(state.skills).length,deferredPublications:state.pendingPublications?.length || 0,binding,agents,note:'配置存在、宿主信任、真实 SessionStart 与完成回执分别报告。信任记录存在不代表当前定义哈希已经通过核对；以宿主审核和真实回调为准。'};
 }
 
 export async function syncPersonalSkills({base=dataRoot(),library}={}) {
