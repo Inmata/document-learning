@@ -4,12 +4,25 @@ import { join } from 'node:path';
 import { hash, stable } from './io.mjs';
 import { mergeLearning, addSources, retrieve, scopeMatch } from './knowledge.mjs';
 import { publishSkills, retireSkills } from './skills.mjs';
-import {findTurn,claimRecovery,releaseRecovery,validRecovery,isTerminal as terminal} from './recovery.mjs';
+import {findTurn,claimRecovery,releaseRecovery,settleRecovery,validRecovery,isTerminal as terminal} from './recovery.mjs';
 import {exportCatalog} from './catalog.mjs';
 
 const cli = fileURLToPath(new URL('../bin/document-learning.mjs',import.meta.url)).replaceAll('\\','/');
 const entry = fileURLToPath(new URL('../skills/document-learning/SKILL.md',import.meta.url)).replaceAll('\\','/');
 export const sessionKey = (agent,id) => `${agent}-${hash(String(id)).slice(0,24)}`;
+// 宿主上报的计划模式拼写不统一（Codex/Codeg 可能给 plan、plan_mode 或 plan-mode）。
+// 只做归一化比较，不覆盖已存储的值：current.permissionMode 与 context.mode 保留原样，
+// 便于 recover 输出与审计。不接受 planning、readonly 等近似词，避免误扣技能发布。
+const PLAN_MODES = new Set(['plan','plan_mode','plan-mode']);
+const normalizeMode = value => typeof value === 'string' ? value.trim().toLowerCase().replaceAll(' ','_') : '';
+export const isPlanMode = (...values) => values.some(value => PLAN_MODES.has(normalizeMode(value)));
+// 宿主的后台模型调用（ambient 建议生成、审批复核等）运行在非持久化线程上，拿不到 rollout 路径，
+// 载荷中 transcript_path 为 null。载荷没有显式的内部标记（schema 为 additionalProperties:false），
+// permission_mode 与 cwd 也不可用（真实用户轮同样可能是 bypassPermissions，内部调用也会用真实工作目录），
+// 所以空 transcript_path 是唯一可用的权威判据。
+// 只认显式 null：字段缺失按普通会话处理，避免旧宿主被误判而静默丢弃真实轮。
+// Claude Code 的 transcript_path 为恒定字段，因此该判据对它始终为假，不改变其行为。
+const isBackgroundCall = event => event.transcript_path === null;
 function contextOutput(event,text) { return {hookSpecificOutput:{hookEventName:event,additionalContext:text}}; }
 
 function signalFrom(value, depth = 0) {
@@ -26,8 +39,8 @@ function signalFrom(value, depth = 0) {
   return null;
 }
 function guidance(key,turn) {
-  const recovery=(turn.recoveryTickets || []).some(t=>t.expires>Date.now())?`另有一轮未完成补学，先运行 node ${JSON.stringify(cli)} recover --session ${key} --turn ${JSON.stringify(turn.id)} --token ${turn.token} 只读取得原始证据及恢复票据；按其说明补做回执，不继续旧业务操作。`:'';
-  return `文档学习：先判断本轮是否实际制作、修订或审阅文档（讨论插件/编程不算）。用只输出 JSON 的命令 node ${JSON.stringify(cli)} signal --session ${key} --turn ${JSON.stringify(turn.id)} --token ${turn.token} --document false 提交判断。文档任务改为 true，增加 --task 稳定文档标识 --kind 文档类型，随后按需读取 ${JSON.stringify(entry)}；复杂 context 可用 JSON stdin 或 --base64 提交。signal 不修改文件，由宿主 hook 保存；计划模式同样可用。不向用户询问是否记录。这些是内部治理步骤，完成后直接回答原任务，回复中不列信号或回执。${recovery}`;
+  const recovery=(turn.recoveryTickets || []).some(t=>t.expires>Date.now())?`另有一轮未完成补学，先运行 node ${JSON.stringify(cli)} recover --session ${key} --turn ${JSON.stringify(turn.id)} --token ${turn.token} 只读取得原始证据及恢复票据；按其说明补做回执（提交时用 --phase complete --recovery-ticket <id> 带上票据），不继续旧业务操作。`:'';
+  return `文档学习：先判断本轮是否实际制作、修订或审阅文档（讨论插件/编程不算）。用只输出 JSON 的命令 node ${JSON.stringify(cli)} signal --session ${key} --turn ${JSON.stringify(turn.id)} --token ${turn.token} --document false 提交判断。文档任务改为 true，增加 --task 稳定文档标识 --kind 文档类型，随后按需读取 ${JSON.stringify(entry)}；复杂 context 可用 JSON stdin 或 --base64 提交。signal 不修改文件，由宿主 hook 保存；计划模式同样可用。计划模式下宿主上报的 permission_mode 可能仍是 default：此时 begin 需显式加 --mode plan（或 context.mode=plan），不要根据 update_plan 或工具名推断。不向用户询问是否记录。这些是内部治理步骤，完成后直接回答原任务，回复中不列信号或回执。${recovery}`;
 }
 function compactMatches(match,skills,candidates=[]) {
   const short=r=>({id:r.id,key:r.key,value:r.value,text:r.text.slice(0,260),scope:r.scope,strength:r.strength,...(r.text.length>260?{truncated:true}:{})});
@@ -40,10 +53,36 @@ function compactMatches(match,skills,candidates=[]) {
   return result;
 }
 
+export const SESSION_LIMIT = 50;
+// 只淘汰完全终结、且不参与恢复的会话：任一未终结轮、任一未过期租约，
+// 或作为认领方仍持有票据，都保留。旧会话的终结 pending 轮也不再参与恢复，
+// 一并清掉，避免 pending 与 sessions 无界增长。
+const droppableSession = s => {
+  if ((s.recoveryTickets || []).length) return false;
+  return [s.current, ...(s.pending || [])].filter(Boolean).every(t => terminal(t) && !t.recoveryLease);
+};
+function pruneSessions(state, keepKey) {
+  for (const s of Object.values(state.sessions)) if (s.pending) s.pending = s.pending.filter(t => !terminal(t));
+  const keys = Object.keys(state.sessions);
+  if (keys.length <= SESSION_LIMIT) return;
+  const oldest = keys
+    .filter(key => key !== keepKey && droppableSession(state.sessions[key]))
+    .sort((a, b) => String(state.sessions[a].lastStart || '').localeCompare(String(state.sessions[b].lastStart || '')));
+  for (const key of oldest.slice(0, keys.length - SESSION_LIMIT)) delete state.sessions[key];
+}
+
 export async function handleHook(library, agent, event, { repository } = {}) {
   const name = event.hook_event_name;
   if (!event.session_id || !name) throw new Error('hook 缺少会话标识或事件名');
   const key = sessionKey(agent,event.session_id);
+  if (isBackgroundCall(event)) {
+    // 丢弃必须可审计（项目原则是不静默丢弃）：每次后台调用只记一条汇总，不保存载荷。
+    if (name === 'SessionStart') await library.transact('background-call', state => {
+      const background = state.background ||= { count: 0, lastAt: null, lastAgent: null };
+      background.count++; background.lastAt = new Date().toISOString(); background.lastAgent = agent;
+    });
+    return {};
+  }
   if (name === 'SessionStart') {
     await library.transact('session-start',state => {
       const session = state.sessions[key] ||= { agent, id:event.session_id, sequence:0 };
@@ -65,6 +104,7 @@ export async function handleHook(library, agent, event, { repository } = {}) {
       const id = event.turn_id || `${session.sequence}-${hash(prompt).slice(0,10)}`;
       session.current = {id,token:randomUUID(),prompt,cwd:event.cwd,permissionMode:event.permission_mode || session.permissionMode || 'default',receipt:'pending',repairCount:0,tools:[],at:new Date().toISOString()};
       claimRecovery(state,key,id);
+      pruneSessions(state,key);
     });
     const turn = (await library.read()).sessions[key].current;
     return contextOutput(name,guidance(key,turn));
@@ -86,6 +126,12 @@ export async function handleHook(library, agent, event, { repository } = {}) {
     });
     return {};
   }
+  // 不变量：只有本会话下一需求、第二次 Stop（stop_hook_active / repairCount>=1）、
+  // SessionEnd、StopFailure、Interrupt 之后，当前轮才转为 pending-recovery 并允许跨会话认领。
+  // 不要在首轮 Stop 提前标记：claimRecovery 会扫描所有会话的 pending-recovery current，
+  // 模型仍在续轮时可能被其他会话认领，导致原轮学习被静默丢弃。
+  // 宿主差异：Codex/Codeg 在首轮 Stop 后不保证再触发第二次 Stop，取消委派也不触发 hook，
+  // 因此本分支的 block + repairCount 兜底必须保留，不能依赖第二次 Stop 收尾。
   if (name === 'Stop') {
     const state=await library.read(),unfinishedRecovery=(turn.recoveryTickets || []).some(ticket=>!terminal(findTurn(state,ticket.session,ticket.turn))&&ticket.expires>Date.now());
     if (terminal(turn)&&!unfinishedRecovery) return {};
@@ -124,7 +170,7 @@ export async function processSignal(library,key,packet,{repository,permissionMod
     await library.transact('classify',state => {
       const t = findTurn(state,key,packet.turn);
       t.document = packet.document; t.context = {...context,workspace:t.cwd || ''};
-      if (!packet.document) { t.receipt = 'not-document'; return; }
+      if (!packet.document) { t.receipt = 'not-document'; settleRecovery(state,t); return; }
       t.source = `${key}/${t.id}/user`;
       if(state.sources[t.source]) {
         if(state.sources[t.source].task!==context.task)throw new Error('同一轮的 task 标识应保持稳定；可补充其他条件');
@@ -152,7 +198,7 @@ export async function processSignal(library,key,packet,{repository,permissionMod
     mergeLearning(state,{rules:packet.rules || [],revise:packet.revise || [],observations:packet.observations || [],retire:packet.retire || []});
     t.completionDigest = digest;
   });
-  const planOnly=permissionMode==='plan' || current.permissionMode==='plan' || current.context.mode==='plan';
+  const planOnly=isPlanMode(permissionMode,current.permissionMode,current.context?.mode);
   if(planOnly && (packet.skills?.length || packet.retireSkills?.length)) {
     await library.transact('defer-publication',state=>{
       const proposal={task:current.context.task,skills:packet.skills || [],retireSkills:packet.retireSkills || []};
@@ -169,7 +215,7 @@ export async function processSignal(library,key,packet,{repository,permissionMod
     t.receipt = skills.some(s=>s.status==='manual-change') ? 'pending-recovery' : ((packet.rules?.length || packet.revise?.length || packet.skills?.length || packet.retire?.length || packet.observations?.length || retired.length) ? 'complete' : 'no-new-learning');
     t.skillResults = skills;
     t.skillDecision=packet.skillDecision;
-    if(terminal(t)&&t.recoveryLease){const owner=findTurn(state,t.recoveryLease.ownerKey,t.recoveryLease.ownerTurn);if(owner)owner.recoveryTickets=owner.recoveryTickets?.filter(ticket=>ticket.id!==t.recoveryLease.ticket);delete t.recoveryLease;}
+    if(terminal(t))settleRecovery(state,t);
     const completedNames=new Set([...skills.filter(s=>s.status==='published').map(s=>s.name),...retired.map(s=>s.name)]);
     state.pendingPublications=(state.pendingPublications || []).filter(p=>p.task!==t.context.task || [...p.skills,...p.retireSkills].some(s=>!completedNames.has(s.name)));
   });

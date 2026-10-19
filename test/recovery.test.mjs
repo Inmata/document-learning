@@ -28,6 +28,23 @@ test('同会话后续轮次不会丢失旧回执，过期和伪造票据不能�
  assert.throws(()=>recoveryInput(state,key,current.id,'forged'),/不属于/);
 });
 
+test('恢复者中断后释放租期并清空票据，下一会话立即接续',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'doc-recovery-'));t.after(()=>rm(root,{recursive:true,force:true}));const lib=await Library.open(root);
+ const event=(session,name,rest={})=>({session_id:session,hook_event_name:name,cwd:`workspace-${session}`,...rest});
+ const originalKey=sessionKey('codex','original');
+ await handleHook(lib,'codex',event('original','UserPromptSubmit',{prompt:'旧需求'}));
+ await handleHook(lib,'codex',event('original','SessionEnd'));
+ await handleHook(lib,'codex',event('owner','UserPromptSubmit',{prompt:'认领'}));
+ const ownerKey=sessionKey('codex','owner'),owner=(await lib.read()).sessions[ownerKey].current;
+ assert.equal(recoveryInput(await lib.read(),ownerKey,owner.id,owner.token).length,1);
+ await handleHook(lib,'codex',event('owner','Interrupt'));
+ const released=await lib.read();
+ assert.deepEqual(released.sessions[ownerKey].current.recoveryTickets,[]);
+ assert.equal(released.sessions[originalKey].current.recoveryLease,undefined);
+ await handleHook(lib,'codex',event('next','UserPromptSubmit',{prompt:'接续'}));
+ const nextKey=sessionKey('codex','next'),next=(await lib.read()).sessions[nextKey].current;
+ assert.equal(recoveryInput(await lib.read(),nextKey,next.id,next.token)[0].session,originalKey);
+});
 test('恢复者关闭后立即释放租期，下一会话可接续而不必等待十分钟',async t=>{
  const root=await mkdtemp(join(tmpdir(),'doc-recovery-'));t.after(()=>rm(root,{recursive:true,force:true}));const lib=await Library.open(root);
  for(const id of ['original','first-owner']){await handleHook(lib,'codex',{session_id:id,hook_event_name:'UserPromptSubmit',prompt:id});await handleHook(lib,'codex',{session_id:id,hook_event_name:'SessionEnd'});}

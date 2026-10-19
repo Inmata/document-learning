@@ -13,10 +13,20 @@ export function claimRecovery(state,ownerKey,ownerTurn,now=Date.now()) {
  return null;
 }
 export function releaseRecovery(state,ownerKey,ownerTurn) {
- for(const ticket of findTurn(state,ownerKey,ownerTurn)?.recoveryTickets || []) {
+ const owner=findTurn(state,ownerKey,ownerTurn);
+ for(const ticket of owner?.recoveryTickets || []) {
   const original=findTurn(state,ticket.session,ticket.turn),lease=original?.recoveryLease;
   if(lease?.ownerKey===ownerKey&&lease.ownerTurn===ownerTurn)delete original.recoveryLease;
  }
+ if(owner)owner.recoveryTickets=[];
+}
+// 单张票据结清：原轮已完成或已判定非文档时释放租约，并从认领方移除该票据。
+// 只结清这一张，认领方其余未完成的票据继续保留给 guidance 提示。
+export function settleRecovery(state,turn) {
+ const lease=turn?.recoveryLease;if(!lease)return;
+ const owner=findTurn(state,lease.ownerKey,lease.ownerTurn);
+ if(owner)owner.recoveryTickets=owner.recoveryTickets?.filter(ticket=>ticket.id!==lease.ticket);
+ delete turn.recoveryLease;
 }
 export function recoveryInput(state,key,turn,token) {
  const owner=findTurn(state,key,turn);if(!owner||owner.token!==token)throw new Error('恢复票据不属于当前轮次');

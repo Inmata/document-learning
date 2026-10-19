@@ -123,7 +123,7 @@ export async function doctor({base=dataRoot()}={}) {
   }
   let writable=true;
   try {await access(library.root,constants.W_OK);}catch{writable=false;}
-  return {status:!writable?'library-read-only':agents.some(a=>a.hookTrust?.status==='needs-review'&&!a.callbackObserved)?'awaiting-hook-trust':'ready',library:library.root,revision:state.revision,ruleCount:state.rules.filter(r=>r.status==='active').length,archivedRuleCount:state.rules.filter(r=>r.status==='archived').length,skillCount:Object.keys(state.skills).length,deferredPublications:state.pendingPublications?.length || 0,binding,agents,note:'配置存在、宿主信任、真实 SessionStart 与完成回执分别报告。信任记录存在不代表当前定义哈希已经通过核对；以宿主审核和真实回调为准。'};
+  return {status:!writable?'library-read-only':agents.some(a=>a.hookTrust?.status==='needs-review'&&!a.callbackObserved)?'awaiting-hook-trust':'ready',library:library.root,revision:state.revision,ruleCount:state.rules.filter(r=>r.status==='active').length,archivedRuleCount:state.rules.filter(r=>r.status==='archived').length,skillCount:Object.keys(state.skills).length,deferredPublications:state.pendingPublications?.length || 0,backgroundIgnored:state.background?.count || 0,binding,agents,note:'配置存在、宿主信任、真实 SessionStart 与完成回执分别报告。信任记录存在不代表当前定义哈希已经通过核对；以宿主审核和真实回调为准。'};
 }
 
 export async function syncPersonalSkills({base=dataRoot(),library,replaceTargets=[]}={}) {
