@@ -34,7 +34,8 @@ for(const agent of ['codex','claude']) {
   });
 }
 test('Stop 最多补偿一次，模型未完成时不伪报成功',async t=>{
-  const {library,base,key}=await setup(t);
+  const {library,base,key,submit}=await setup(t);
+  await submit({phase:'begin',document:true,context:{task:'a',kind:'report'}});
   assert.equal((await handleHook(library,'codex',{...base,hook_event_name:'Stop'})).decision,'block');
   assert.equal((await handleHook(library,'codex',{...base,hook_event_name:'Stop'})).decision,undefined);
   assert.equal((await library.read()).sessions[key].current.receipt,'pending-recovery');
@@ -70,7 +71,9 @@ test('非文档的恢复提交结清租约与票据，不再重复提示',async 
  const old=(await library.read()).sessions[oldKey].current;
  await handleHook(library,'codex',event('old','PostToolUse',{tool_response:{document_learning_signal:{session:oldKey,turn:old.id,token:old.token,phase:'begin',document:true,context:{task:'old-report',kind:'experiment-report'}}}}));
  await handleHook(library,'codex',event('old','Interrupt'));
- await handleHook(library,'claude',event('new','UserPromptSubmit',{prompt:'2+2'}));
+ await handleHook(library,'claude',event('new','UserPromptSubmit',{prompt:'整理一份新报告'}));
+ const fresh=(await library.read()).sessions[newKey].current;
+ await handleHook(library,'claude',event('new','PostToolUse',{tool_response:{document_learning_signal:{session:newKey,turn:fresh.id,token:fresh.token,phase:'begin',document:true,context:{task:'new-report',kind:'report'}}}}));
  const owner=(await library.read()).sessions[newKey].current;
  const [input]=recoveryInput(await library.read(),newKey,owner.id,owner.token);
  assert.equal(typeof input?.recoveryTicket,'string');
@@ -161,7 +164,7 @@ test('存活会话只保留未终结的 pending 轮，终结轮不再堆积',asy
  const root=await mkdtemp(join(tmpdir(),'doc-hooks-'));t.after(()=>rm(root,{recursive:true,force:true}));
  const library=await Library.open(root);
  await library.transact('seed-pending',state=>{
-  state.sessions['codex-mixed']={agent:'codex',id:'mixed',lastStart:'2026-01-01T00:00:00.000Z',current:{id:'t-done',receipt:'complete'},pending:[{id:'t-old',receipt:'complete'},{id:'t-open',receipt:'pending-recovery'}]};
+  state.sessions['codex-mixed']={agent:'codex',id:'mixed',lastStart:'2026-01-01T00:00:00.000Z',current:{id:'t-done',receipt:'complete'},pending:[{id:'t-old',receipt:'complete'},{id:'t-open',receipt:'pending-recovery',document:true}]};
  });
  await handleHook(library,'codex',{session_id:'fresh',hook_event_name:'UserPromptSubmit',prompt:'新需求',cwd:'D:/work',transcript_path:'C:/rollout.jsonl'});
  const pending=(await library.read()).sessions['codex-mixed'].pending;
@@ -172,17 +175,23 @@ test('首轮 Stop 不提前标记待恢复，避免活跃轮被其他会话认�
  const root=await mkdtemp(join(tmpdir(),'doc-hooks-'));t.after(()=>rm(root,{recursive:true,force:true}));
  const library=await Library.open(root);
  const event=(session,name,rest={})=>({session_id:session,hook_event_name:name,cwd:`workspace-${session}`,...rest});
+ const begin=async(session,agent,turn,task)=>handleHook(library,agent,event(session,'PostToolUse',{tool_response:{document_learning_signal:{session:sessionKey(agent,session),turn:turn.id,token:turn.token,phase:'begin',document:true,context:{task,kind:'report'}}}}));
  const activeKey=sessionKey('codex','active'),otherKey=sessionKey('claude','other');
  await handleHook(library,'codex',event('active','UserPromptSubmit',{prompt:'写一份报告'}));
+ const active=(await library.read()).sessions[activeKey].current;
+ await begin('active','codex',active,'active-report');
  const first=await handleHook(library,'codex',event('active','Stop'));
  assert.equal(first.decision,'block');
- assert.equal((await library.read()).sessions[activeKey].current.receipt,'pending');
- await handleHook(library,'claude',event('other','UserPromptSubmit',{prompt:'2+2'}));
+ assert.equal((await library.read()).sessions[activeKey].current.receipt,'in-progress');
+ await handleHook(library,'claude',event('other','UserPromptSubmit',{prompt:'整理另一份报告'}));
  const other=(await library.read()).sessions[otherKey].current;
+ await begin('other','claude',other,'other-report');
  assert.deepEqual(recoveryInput(await library.read(),otherKey,other.id,other.token),[]);
+ await handleHook(library,'claude',event('other','PostToolUse',{tool_response:{document_learning_signal:{session:otherKey,turn:other.id,token:other.token,phase:'complete',rules:[],skills:[],skillDecision:{action:'no-change',reason:'测试中暂无新经验'}}}}));
  await handleHook(library,'codex',event('active','SessionEnd'));
- await handleHook(library,'claude',event('other','UserPromptSubmit',{prompt:'3+3'}));
+ await handleHook(library,'claude',event('other','UserPromptSubmit',{prompt:'再整理一份报告'}));
  const next=(await library.read()).sessions[otherKey].current;
+ await begin('other','claude',next,'next-report');
  const [claimed]=recoveryInput(await library.read(),otherKey,next.id,next.token);
  assert.equal(claimed.session,activeKey);
 });

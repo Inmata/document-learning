@@ -66,11 +66,15 @@ async function main(){
   }
   if(command==='hook'&&process.env.DOCUMENT_LEARNING_WORKER==='1'){print({});return;}
   if(!['hook','query','show-rule','learn','rollback','skill-rollback','replay','reconcile','backfill','catalog','sync-skills','recover'].includes(command))throw new Error(`未知命令：${command}`);
+  if(command==='recover'){
+    // recover 只读取证据，不同步技能目录，避免只读操作产生额外写入。
+    const library=await resolveLibrary({base,root:options.library,sync:false});
+    print(recoveryInput(await library.read(),options.session,options.turn,options.token));return;
+  }
   const library=await resolveLibrary({base,root:options.library});
   const binding=await readBinding(base) || {};
   if(command==='catalog'){print(await exportCatalog(library));return;}
   if(command==='sync-skills'){print(await syncPersonalSkills({base,library}));return;}
-  if(command==='recover'){print(recoveryInput(await library.read(),options.session,options.turn,options.token));return;}
   if(command==='backfill'){
     if(!options.provider&&!options.decision)throw new Error('补学默认由当前会话整理：先读取数据集，生成符合学习 schema 的 JSON，再用 --decision 提交。仅明确选择其他模型后端时使用 --provider；不会默认额外外发私人资料。');
     const learner=options.decision?async()=>readJson(options.decision):createProvider(await readJson(options.provider));

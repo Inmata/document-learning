@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { hash, stable } from './io.mjs';
 import { mergeLearning, addSources, retrieve, scopeMatch } from './knowledge.mjs';
 import { publishSkills, retireSkills } from './skills.mjs';
-import {findTurn,claimRecovery,releaseRecovery,settleRecovery,validRecovery,isTerminal as terminal} from './recovery.mjs';
+import {findTurn,claimRecovery,releaseRecovery,settleRecovery,validRecovery,normalizeRecovery,isTerminal as terminal} from './recovery.mjs';
 import {exportCatalog} from './catalog.mjs';
 
 const cli = fileURLToPath(new URL('../bin/document-learning.mjs',import.meta.url)).replaceAll('\\','/');
@@ -39,8 +39,7 @@ function signalFrom(value, depth = 0) {
   return null;
 }
 function guidance(key,turn) {
-  const recovery=(turn.recoveryTickets || []).some(t=>t.expires>Date.now())?`另有一轮未完成补学，先运行 node ${JSON.stringify(cli)} recover --session ${key} --turn ${JSON.stringify(turn.id)} --token ${turn.token} 只读取得原始证据及恢复票据；按其说明补做回执（提交时用 --phase complete --recovery-ticket <id> 带上票据），不继续旧业务操作。`:'';
-  return `文档学习：先判断本轮是否实际制作、修订或审阅文档（讨论插件/编程不算）。用只输出 JSON 的命令 node ${JSON.stringify(cli)} signal --session ${key} --turn ${JSON.stringify(turn.id)} --token ${turn.token} --document false 提交判断。文档任务改为 true，增加 --task 稳定文档标识 --kind 文档类型，随后按需读取 ${JSON.stringify(entry)}；复杂 context 可用 JSON stdin 或 --base64 提交。signal 不修改文件，由宿主 hook 保存；计划模式同样可用。计划模式下宿主上报的 permission_mode 可能仍是 default：此时 begin 需显式加 --mode plan（或 context.mode=plan），不要根据 update_plan 或工具名推断。不向用户询问是否记录。这些是内部治理步骤，完成后直接回答原任务，回复中不列信号或回执。${recovery}`;
+  return `文档学习：仅当本轮实际制作、修订或审阅文档时，才运行 node ${JSON.stringify(cli)} signal --session ${key} --turn ${JSON.stringify(turn.id)} --token ${turn.token} --document true --task 稳定文档标识 --kind 文档类型，并按需读取 ${JSON.stringify(entry)}；普通聊天、编程和插件讨论无需执行任何文档学习命令。计划模式下宿主上报的 permission_mode 可能仍是 default：此时 begin 需显式加 --mode plan（或 context.mode=plan），不要根据 update_plan 或工具名推断。复杂 context 可用 JSON stdin 或 --base64 提交。文档任务完成前用同一 session/turn/token 提交 phase=complete，携带 rules、observations、retire、skills 和 skillDecision；无新经验提交空数组。回复中不列这些内部步骤。`;
 }
 function compactMatches(match,skills,candidates=[]) {
   const short=r=>({id:r.id,key:r.key,value:r.value,text:r.text.slice(0,260),scope:r.scope,strength:r.strength,...(r.text.length>260?{truncated:true}:{})});
@@ -85,25 +84,29 @@ export async function handleHook(library, agent, event, { repository } = {}) {
   }
   if (name === 'SessionStart') {
     await library.transact('session-start',state => {
+      normalizeRecovery(state);
       const session = state.sessions[key] ||= { agent, id:event.session_id, sequence:0 };
       session.cwd = event.cwd || session.cwd; session.lastStart = new Date().toISOString(); session.source = event.source || 'startup';
       session.permissionMode=event.permission_mode || session.permissionMode || 'default';
     });
     const s = (await library.read()).sessions[key];
-    const pending = s.current && !terminal(s.current) ? `上轮 ${s.current.id} 尚未完成学习回执，恢复时继续处理。` : '';
-    return contextOutput(name,`文档学习已连接本机个人库。每轮仅先判断相关性，实际文档任务再按需读取经验。已有技能的明确调用政策继续有效。${pending}`);
+    const pending = s.current && s.current.document === true && !terminal(s.current) ? `上一文档任务 ${s.current.id} 尚未完成学习回执，下次文档任务会继续处理。` : '';
+    return contextOutput(name,`文档学习已连接本机个人库。只有实际文档任务才需读取经验并提交学习；普通聊天和编程无需执行任何文档学习命令。已有技能的明确调用政策继续有效。${pending}`);
   }
   if (name === 'UserPromptSubmit') {
     await library.transact('prompt',state => {
+      normalizeRecovery(state);
       const session = state.sessions[key] ||= {agent,id:event.session_id,sequence:0};
       const prompt = String(event.prompt || '');
       if (session.current && !terminal(session.current) && session.current.prompt === prompt && (!event.turn_id || session.current.id === event.turn_id)) return;
       if(session.current)releaseRecovery(state,key,session.current.id);
-      if (session.current && !terminal(session.current)) {session.current.receipt='pending-recovery';(session.pending ||= []).push(session.current);}
+      if (session.current && !terminal(session.current)) {
+        if(session.current.document===true){session.current.receipt='pending-recovery';(session.pending ||= []).push(session.current);}
+        else session.current.receipt='not-document';
+      }
       session.sequence++;
       const id = event.turn_id || `${session.sequence}-${hash(prompt).slice(0,10)}`;
       session.current = {id,token:randomUUID(),prompt,cwd:event.cwd,permissionMode:event.permission_mode || session.permissionMode || 'default',receipt:'pending',repairCount:0,tools:[],at:new Date().toISOString()};
-      claimRecovery(state,key,id);
       pruneSessions(state,key);
     });
     const turn = (await library.read()).sessions[key].current;
@@ -135,9 +138,21 @@ export async function handleHook(library, agent, event, { repository } = {}) {
   if (name === 'Stop') {
     const state=await library.read(),unfinishedRecovery=(turn.recoveryTickets || []).some(ticket=>!terminal(findTurn(state,ticket.session,ticket.turn))&&ticket.expires>Date.now());
     if (terminal(turn)&&!unfinishedRecovery) return {};
+    // 未分类/非文档轮不产生学习欠账。仍持有旧账票据时只提示补学，不重新判定当前轮。
+    if (turn.document !== true) {
+      await library.transact('unclassified',state => {
+        const current=state.sessions[key].current;
+        if(current&&current.id===turn.id&&!terminal(current))current.receipt='not-document';
+      });
+      if (unfinishedRecovery && !event.stop_hook_active && turn.repairCount < 1) {
+        await library.transact('recovery-notice',state => { state.sessions[key].current.repairCount++; });
+        return {decision:'block',reason:`当前轮无需学习回执。现在只补一项已经认领的历史文档学习：运行 node ${JSON.stringify(cli)} recover --session ${key} --turn ${JSON.stringify(turn.id)} --token ${turn.token}；按返回的原始 session/turn/token、recoveryTicket 和 nextPhase 提交 signal。无需继续旧业务或增加审批；完成后按原请求结束。`};
+      }
+      return {};
+    }
     if (event.stop_hook_active || turn.repairCount >= 1) {
       await library.transact('receipt-missing',state => { if(!terminal(state.sessions[key].current))state.sessions[key].current.receipt = 'pending-recovery'; });
-      return {systemMessage:'文档学习本轮回执未完成，已保留待恢复状态。'};
+      return {systemMessage:'文档学习本轮学习未完成，已保留待恢复状态。'};
     }
     await library.transact('receipt-repair',state => { state.sessions[key].current.repairCount++; });
     if(terminal(turn)&&unfinishedRecovery)return {decision:'block',reason:`当前用户任务及本轮判断已完成，不要再次提交当前轮判断。现在只补一项已经认领的历史学习：运行 node ${JSON.stringify(cli)} recover --session ${key} --turn ${JSON.stringify(turn.id)} --token ${turn.token}；按返回的原始 session/turn/token、recoveryTicket 和 nextPhase 提交 signal。无需继续旧业务或增加审批；完成后按原请求结束。`};
@@ -145,12 +160,13 @@ export async function handleHook(library, agent, event, { repository } = {}) {
   }
   if (['PreCompact','PostCompact','SessionEnd','StopFailure','Interrupt'].includes(name)) {
     await library.transact(name,state => {
+      normalizeRecovery(state);
       const s = state.sessions[key];
       s.lastLifecycle = {event:name,at:new Date().toISOString(),error:event.error || null};
       if(['SessionEnd','StopFailure','Interrupt'].includes(name))releaseRecovery(state,key,s.current.id);
-      if (['StopFailure','Interrupt','SessionEnd'].includes(name)) s.current.receipt = terminal(s.current) ? s.current.receipt : 'pending-recovery';
+      if (['StopFailure','Interrupt','SessionEnd'].includes(name) && !terminal(s.current)) s.current.receipt = s.current.document===true ? 'pending-recovery' : 'not-document';
     });
-    if (name === 'PostCompact') return contextOutput(name,`文档学习状态已保存。${terminal(turn)?'本轮回执已完成。':guidance(key,turn)}`);
+    if (name === 'PostCompact') return contextOutput(name,`文档学习状态已保存。${terminal(turn)||turn.document!==true?'本轮无需继续学习。':guidance(key,turn)}`);
   }
   return {};
 }
@@ -167,28 +183,34 @@ export async function processSignal(library,key,packet,{repository,permissionMod
     if (typeof packet.document !== 'boolean') throw new Error('需要明确的文档相关性判断');
     const context = packet.context || {};
     if (packet.document && (!context.task || !context.kind)) throw new Error('文档任务需要 task 和 kind');
+    let recoveryTicket=null;
     await library.transact('classify',state => {
       const t = findTurn(state,key,packet.turn);
       t.document = packet.document; t.context = {...context,workspace:t.cwd || ''};
-      if (!packet.document) { t.receipt = 'not-document'; settleRecovery(state,t); return; }
+      if (!packet.document) {
+        t.receipt = 'not-document';
+        settleRecovery(state,t);
+        // 本轮已判定为非文档，不再替任何历史欠账保留票据。
+        releaseRecovery(state,key,t.id);
+        return;
+      }
       t.source = `${key}/${t.id}/user`;
       if(state.sources[t.source]) {
         if(state.sources[t.source].task!==context.task)throw new Error('同一轮的 task 标识应保持稳定；可补充其他条件');
       } else addSources(state,[{id:t.source,role:'user',text:t.prompt || '（空需求）',origin:'conversation',task:context.task,context:t.context}]);
       t.receipt = 'in-progress';
+      // 恢复提交已在处理既有欠账，不再认领新票据；否则认领方会挂到原会话的当前轮。
+      if(!packet.recoveryTicket)recoveryTicket=claimRecovery(state,recoveryOwner || key,t.id);
     });
-    if (!packet.document) {
-      const t=findTurn(await library.read(),key,packet.turn);
-      if(t.recoveryTickets?.length)return contextOutput('PostToolUse',`当前轮次非文档，回执已完成。还需补一项已认领的历史学习，运行 node ${JSON.stringify(cli)} recover --session ${key} --turn ${JSON.stringify(t.id)} --token ${t.token}，按返回的原轮标识、recoveryTicket 和 nextPhase 提交 signal。只整理证据，不继续旧业务，不重复当前判断。`);
-      return {};
-    }
+    if (!packet.document) return {};
     const t = findTurn(await library.read(),key,packet.turn);
     const match = await retrieve(library,t.context);
     const available=Object.values({...((await library.read()).sourceSkills || {}),...(await library.read()).skills}).filter(s=>s.status!=='retired'&&(s.implicit!==false||t.prompt.includes(`$${s.name}`)));
     const skills=available.filter(s=>scopeMatch(s.scope,t.context)==='yes');
     const candidates=available.filter(s=>scopeMatch(s.scope,t.context)==='unknown');
     const deferred=((await library.read()).pendingPublications || []).filter(p=>p.task===t.context.task).map(p=>({id:p.id,names:p.skills.map(s=>s.name),reason:'计划期候选，请对照当前资料重新整理后再提交'}));
-    return contextOutput('PostToolUse',`文档学习检索结果：${JSON.stringify({source:t.source,context:t.context,deferred,...compactMatches(match,skills,candidates)})}。当前需求优先。transfer 仅为其他任务的方法类比，判断是否依赖旧对象后才参考，不搬运参数、偏好或强制程度，不扩大原规则范围。skillCandidates 仅为已有能力目录，核对实际输入和范围后再决定是否读取，创建新技能前先检查覆盖。不要自动调用明确调用的技能。条目截断时可用 show-rule --name ID 按需查看完整来源。完成任务后使用相同 session/turn/token 提交 phase=complete，携带 rules、observations、retire、skills，并以 skillDecision={action:create/update/no-change,reason:具体覆盖及维护理由} 说明判断；无新经验可提交空数组。`);
+    const recovery=recoveryTicket?`另有一项历史文档学习待补：运行 node ${JSON.stringify(cli)} recover --session ${key} --turn ${JSON.stringify(t.id)} --token ${t.token} 取得原轮标识和票据；提交时使用原轮 session/turn/token，并加 --recovery-ticket <票据>。只补学，不继续旧业务。`:'';
+    return contextOutput('PostToolUse',`文档学习检索结果：${JSON.stringify({source:t.source,context:t.context,deferred,...compactMatches(match,skills,candidates)})}。当前需求优先。transfer 仅为其他任务的方法类比，判断是否依赖旧对象后才参考，不搬运参数、偏好或强制程度，不扩大原规则范围。skillCandidates 仅为已有能力目录，核对实际输入和范围后再决定是否读取，创建新技能前先检查覆盖。不要自动调用明确调用的技能。条目截断时可用 show-rule --name ID 按需查看完整来源。${recovery}完成任务后使用相同 session/turn/token 提交 phase=complete，携带 rules、observations、retire、skills，并以 skillDecision={action:create/update/no-change,reason:具体覆盖及维护理由} 说明判断；无新经验可提交空数组。`);
   }
   if (!current.document || !current.context) throw new Error('先提交文档任务判断，再完成学习');
   if(!['create','update','retire','no-change'].includes(packet.skillDecision?.action)||typeof packet.skillDecision.reason!=='string'||!packet.skillDecision.reason.trim()||packet.skillDecision.reason.length>1200)throw new Error('完成学习前需提供 skillDecision：action=create/update/retire/no-change 及具体覆盖或维护理由；空数组不代表已经考虑技能迭代');

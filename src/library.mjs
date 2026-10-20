@@ -148,13 +148,13 @@ export async function syncMemoryFromSkillDirectory(lib) {
   return true;
 }
 
-export async function resolveLibrary({ base = dataRoot(), root, create = true, skillDirectory } = {}) {
+export async function resolveLibrary({ base = dataRoot(), root, create = true, skillDirectory, sync = true } = {}) {
   if (root) return Library.open(root, { create, skillDirectory });
   const binding = await readBinding(base);
   if (binding) {
     // A stale or inaccessible binding is an error, never an invitation to create a second library.
     const lib = await Library.open(binding.library, { create: false, skillDirectory: skillDirectory || binding.skillDirectory });
-    await syncMemoryFromSkillDirectory(lib);
+    if (sync) await syncMemoryFromSkillDirectory(lib);
     return lib;
   }
   if (!create) throw new Error('尚未绑定个人库');

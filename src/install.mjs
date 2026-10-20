@@ -8,6 +8,7 @@ import {readJson,writeJson,atomicWrite,fingerprint,withLock,hash,exists} from '.
 import {dataRoot,resolveLibrary,bindLibrary,readBinding} from './library.mjs';
 import {migrateManagedSkills} from './skills.mjs';
 import {exportCatalog,renderRepoSkillTable} from './catalog.mjs';
+import {isTerminal} from './recovery.mjs';
 
 const exec=promisify(execFile);
 const docSkillTerms=/报告|文档|说明书|作业指导|图注|版式|母版|模板|合同|信函|提案|汇报|清洗|实验|现场|docx|pptx|xlsx|report|presentation|document|spreadsheet|contract|letter|proposal|\bsop\b|\bword\b|\bpowerpoint\b/i;
@@ -119,7 +120,7 @@ export async function doctor({base=dataRoot()}={}) {
       }
       hookTrust={status:missing.length?'needs-review':'record-present-unverified',missing,nextStep:'在原生 Codex 中输入 /hooks，审核并信任文档学习条目；程序不修改信任。'};
     }
-    agents.push({agent,configured,callbackObserved:active.some(s=>!!s.lastStart),lastStart:active.map(s=>s.lastStart).filter(Boolean).sort().at(-1)||null,pending:active.reduce((n,s)=>n+[s.current,...(s.pending || [])].filter(t=>t&&!['complete','not-document','no-new-learning'].includes(t.receipt)).length,0),...(hookTrust?{hookTrust}:{})});
+    agents.push({agent,configured,callbackObserved:active.some(s=>!!s.lastStart),lastStart:active.map(s=>s.lastStart).filter(Boolean).sort().at(-1)||null,pending:active.reduce((n,s)=>n+[s.current,...(s.pending || [])].filter(t=>t&&!isTerminal(t)).length,0),...(hookTrust?{hookTrust}:{})});
   }
   let writable=true;
   try {await access(library.root,constants.W_OK);}catch{writable=false;}
