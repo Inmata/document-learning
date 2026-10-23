@@ -5,9 +5,11 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {install,uninstall,doctor,publishRepository} from '../src/install.mjs';
+import {install,uninstall,doctor,publishRepository,events,scheduleCommands,TASK_NAME} from '../src/install.mjs';
+import {validateConfig} from '../src/config.mjs';
 import {readJson,writeJson} from '../src/io.mjs';
 import {resolveLibrary} from '../src/library.mjs';
+import {rememberAllowRule,pluginAllowRules} from '../src/claude-permissions.mjs';
 
 const run=promisify(execFile);
 const gitCommit=(cwd,args=[])=>run('git',['-c','commit.gpgsign=false','-c','user.name=Test','-c','user.email=test@localhost',...args],{cwd,windowsHide:true});
@@ -32,6 +34,65 @@ test('已绑定库丢失时报告错误，不悄悄初始化另一个库',async 
   await assert.rejects(resolveLibrary({base:dir}),e=>e.code==='ENOENT');
   assert.equal((await doctor({base:dir})).status,'binding-unavailable');
 });
+
+test('Claude remember 授权显式启用、重复安装不叠加、卸载只删除本插件新增规则',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'doc-permissions-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  const userHome=join(dir,'user'),base=join(dir,'data'),path=join(userHome,'.claude','settings.json');
+  const original={permissions:{allow:['Bash(git status)'],ask:['Bash(node *)'],deny:['Bash(git push *)']}};
+  await writeJson(path,original);
+  await install({base,userHome,agents:['claude']});
+  assert.deepEqual((await readJson(path)).permissions,original.permissions);
+  assert.equal((await doctor({base})).agents[0].rememberPermission.status,'not-configured');
+  await install({base,userHome,agents:['claude'],allowClaudeSignal:true});
+  await install({base,userHome,agents:['claude']});
+  const rule=rememberAllowRule(),config=await readJson(path);
+  assert.deepEqual(config.permissions,{...original.permissions,allow:[...original.permissions.allow,...pluginAllowRules()]});assert.ok(pluginAllowRules().includes('mcp__codeg-mcp__ask_user_question'));
+  assert.match(rule,/ remember \*\)$/);
+  assert.equal((await doctor({base})).agents[0].rememberPermission.status,'configured-unverified');
+  config.permissions.allow.push('Bash(npm test)');await writeJson(path,config);
+  await uninstall({base});
+  assert.deepEqual((await readJson(path)).permissions,{...original.permissions,allow:[...original.permissions.allow,'Bash(npm test)']});
+});
+
+test('用户原有的相同允许规则不归插件所有；用户撤销后普通重装不重新授权',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'doc-permissions-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  const userHome=join(dir,'user'),base=join(dir,'data'),path=join(userHome,'.claude','settings.json');
+  const original={permissions:{allow:[rememberAllowRule()]}};await writeJson(path,original);
+  await install({base,userHome,agents:['claude'],allowClaudeSignal:true});
+  await uninstall({base});
+  assert.deepEqual((await readJson(path)).permissions,original.permissions);
+  await writeJson(path,{});
+  await install({base,userHome,agents:['claude'],allowClaudeSignal:true});
+  const config=await readJson(path);config.permissions.allow=[];await writeJson(path,config);
+  await install({base,userHome,agents:['claude']});
+  assert.deepEqual((await readJson(path)).permissions.allow,[]);
+});
+
+test('安装只注册四个事件，写入默认配置；计划任务需确认后才创建，卸载时删除',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'doc-schedule-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  const userHome=join(dir,'user'),base=join(dir,'data'),calls=[];
+  const runner=async(command,args)=>{calls.push([command,...args]);return {stdout:'',stderr:''};};
+  const first=await install({base,userHome,agents:['claude'],runner,platform:'win32'});
+  assert.equal(first.config.created,true);assert.equal(first.schedule.status,'not-created');assert.match(first.schedule.commands[0],/schtasks \/Create/);assert.equal(calls.length,0);
+  const hooks=(await readJson(join(userHome,'.claude','settings.json'))).hooks;
+  assert.deepEqual(Object.keys(hooks).sort(),[...events.claude].sort());
+  const config=await readJson(join(base,'config.json'));assert.equal(config.consolidate.minSessions,3);assert.ok(config._说明);
+  const second=await install({base,userHome,agents:['claude'],schedule:true,runner,platform:'win32'});
+  assert.equal(second.config.created,false);assert.equal(second.schedule.status,'created');
+  assert.equal(calls.length,2);assert.ok(calls[0].includes('MINUTE')&&calls[0].includes('120'));assert.ok(calls[1].includes('ONLOGON'));
+  assert.ok(calls[0].at(-1).includes('consolidate --if-due'));
+  assert.ok(calls[0].at(-1).includes(`--home "${base}"`),'计划任务带上安装时的数据目录');
+  const health=await doctor({base});
+  assert.equal(health.consolidation.schedule.name,TASK_NAME);assert.equal(health.consolidation.pendingSessions,0);assert.equal(health.config.effective.manual.maxChars,3000);
+  await writeJson(join(base,'config.json'),{judge:{provider:'other'}});
+  assert.equal((await doctor({base})).status,'config-invalid');
+  // 配置无效时卸载仍删除计划任务。
+  await uninstall({base,runner,platform:'win32'});
+  assert.ok(calls.slice(2).every(c=>c.includes('/Delete')));assert.equal(calls.length,4);
+  assert.throws(()=>validateConfig({schedule:{intervalMinutes:1440}}),/schedule\.intervalMinutes/);
+  const manual=scheduleCommands(validateConfig({}),{platform:'linux'});assert.match(manual.manual,/crontab/);assert.match(manual.manual,/@reboot/);
+});
+
 test('已有同名人工技能时，安装不改宿主配置',async t=>{
   const dir=await mkdtemp(join(tmpdir(),'doc-collision-'));t.after(()=>rm(dir,{recursive:true,force:true}));
   const userHome=join(dir,'user'),path=join(userHome,'.claude','settings.json');

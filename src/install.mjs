@@ -8,7 +8,9 @@ import {readJson,writeJson,atomicWrite,fingerprint,withLock,hash,exists} from '.
 import {dataRoot,resolveLibrary,bindLibrary,readBinding} from './library.mjs';
 import {migrateManagedSkills} from './skills.mjs';
 import {exportCatalog,renderRepoSkillTable} from './catalog.mjs';
-import {isTerminal} from './recovery.mjs';
+import {rememberAllowRule,addSignalPermission,removeSignalPermission} from './claude-permissions.mjs';
+import {loadConfig,writeDefaultConfig,configPath as userConfigPath} from './config.mjs';
+import {consolidationStatus} from './consolidate.mjs';
 
 const exec=promisify(execFile);
 const docSkillTerms=/报告|文档|说明书|作业指导|图注|版式|母版|模板|合同|信函|提案|汇报|清洗|实验|现场|docx|pptx|xlsx|report|presentation|document|spreadsheet|contract|letter|proposal|\bsop\b|\bword\b|\bpowerpoint\b/i;
@@ -16,7 +18,25 @@ const nonSkillDirs=new Set(['notes','docs','assets','scripts','tests','examples'
 const root=fileURLToPath(new URL('../',import.meta.url));
 const quoteSh=s=>`'${s.replaceAll("'",`'"'"'`)}'`;
 const quotePs=s=>`'${s.replaceAll("'","''")}'`;
-export const events={codex:['SessionStart','UserPromptSubmit','PostToolUse','Stop','PreCompact','PostCompact','SessionEnd','Interrupt'],claude:['SessionStart','UserPromptSubmit','PostToolUse','Stop','PreCompact','PostCompact','SessionEnd','StopFailure']};
+export const events={codex:['SessionStart','UserPromptSubmit','PostToolUse','SessionEnd'],claude:['SessionStart','UserPromptSubmit','PostToolUse','SessionEnd']};
+export const TASK_NAME='DocumentLearningConsolidate';
+const script=fileURLToPath(new URL('../bin/document-learning.mjs',import.meta.url));
+// 计划任务：每 intervalMinutes 分钟一次，可选登录时一次，都只做到期检查。
+export function scheduleCommands(config,{platform=process.platform,node=process.execPath,cli=script,base}={}) {
+  const run=`"${node}" "${cli}" consolidate --if-due${base?` --home "${base}"`:''}`;
+  const minutes=config.schedule.intervalMinutes;
+  if(platform==='win32') {
+    const create=[['/Create','/F','/TN',TASK_NAME,'/SC','MINUTE','/MO',String(minutes),'/TR',run]];
+    if(config.schedule.runAtLogon)create.push(['/Create','/F','/TN',`${TASK_NAME}-Logon`,'/SC','ONLOGON','/TR',run]);
+    return {platform,create,remove:[['/Delete','/F','/TN',TASK_NAME],['/Delete','/F','/TN',`${TASK_NAME}-Logon`]]};
+  }
+  const cron=`${minutes<60?`*/${minutes} * * * *`:`0 */${Math.max(1,Math.round(minutes/60))} * * *`} DOCUMENT_LEARNING_WORKER=1 ${run}`;
+  return {platform,manual:platform==='darwin'?`把以下条目加入 launchd（~/Library/LaunchAgents/com.document-learning.consolidate.plist 的 ProgramArguments 为 ${run}，StartInterval=${minutes*60}${config.schedule.runAtLogon?'，RunAtLoad=true':''}），或使用 crontab：
+${cron}`:`crontab -e 加入：
+${cron}${config.schedule.runAtLogon?`
+@reboot DOCUMENT_LEARNING_WORKER=1 ${run}`:''}`};
+}
+async function schtasks(args,runner){return runner('schtasks',args,{windowsHide:true});}
 const configPath=(home,agent)=>join(home,agent==='codex'?'.codex':'.claude',agent==='codex'?'hooks.json':'settings.json');
 export function commandFor(agent,pluginRoot=root,windows=process.platform==='win32') {
   const script=join(pluginRoot,'bin','document-learning.mjs').replaceAll('\\','/');
@@ -33,7 +53,8 @@ function removeOwned(config,commands) {
   }
   return next;
 }
-export async function install({base=dataRoot(),userHome=homedir(),agents=['codex','claude'],pluginRoot=root,repository,skillDirectory}={}) {
+export async function install({base=dataRoot(),userHome=homedir(),agents=['codex','claude'],pluginRoot=root,repository,skillDirectory,allowClaudeSignal=false,schedule=false,runner=exec,platform=process.platform}={}) {
+  const configFile=await writeDefaultConfig(base),config=await loadConfig(base);
   let library=await resolveLibrary({base,skillDirectory});
   if(repository || skillDirectory)library=await bindLibrary({base,library:library.root,skillRepository:repository,skillDirectory});
   if(skillDirectory) {
@@ -46,7 +67,7 @@ export async function install({base=dataRoot(),userHome=homedir(),agents=['codex
     for(const agent of agents) {
       if(!events[agent])throw new Error(`不支持的宿主：${agent}`);
       const path=configPath(userHome,agent),beforeHash=await fingerprint(path);
-      const config=await readJson(path,{}),command=commandFor(agent,pluginRoot);
+      const hostConfig=await readJson(path,{}),command=commandFor(agent,pluginRoot);
       const old=registry.agents[agent];
       const entry=join(userHome,agent==='codex'?'.codex':'.claude','skills','document-learning');
       let replaceOwnedLink=false;
@@ -58,11 +79,17 @@ export async function install({base=dataRoot(),userHome=homedir(),agents=['codex
         }
       }
       catch(e){if(e.code!=='ENOENT')throw e;}
-      const next=removeOwned(config,[...(old?.commands || []),command]);next.hooks ||= {};
+      const next=removeOwned(hostConfig,[...(old?.commands || []),command]);next.hooks ||= {};
+      let signalPermission;
+      const keepSignalPermission=agent==='claude'&&old?.signalPermission?.enabled&&Array.isArray(hostConfig.permissions?.allow)&&hostConfig.permissions.allow.includes(rememberAllowRule(old.pluginRoot));
+      if(agent==='claude'&&(allowClaudeSignal||keepSignalPermission)) {
+        removeSignalPermission(next,old?.signalPermission);
+        signalPermission=addSignalPermission(next,pluginRoot);
+      }
       for(const event of events[agent]) {
         const handler={type:'command',command,timeout:agent==='codex'&&['SessionEnd','Interrupt'].includes(event)?3:10};
         if(agent==='codex'&&['SessionStart','UserPromptSubmit','PostToolUse'].includes(event))handler.additionalContextLimit=event==='PostToolUse'?8000:2400;
-        (next.hooks[event] ||= []).push({hooks:[handler]});
+        (next.hooks[event] ||= []).push({...(event==='PermissionDenied'?{matcher:'Bash'}:{}),hooks:[handler]});
       }
       if(beforeHash)await atomicWrite(join(base,'install','backups',`${agent}-${beforeHash}.json`),await readFile(path,'utf8'));
       if(await fingerprint(path)!==beforeHash)throw new Error('安装期间宿主配置发生变化，已保留原文件');
@@ -75,26 +102,39 @@ export async function install({base=dataRoot(),userHome=homedir(),agents=['codex
         if(resolve(target)!==resolve(pluginRoot,'skills','document-learning'))throw new Error(`已有同名技能，未覆盖：${entry}`);
         linked=true;
       } catch(e) { if(e.code==='ENOENT'){await symlink(join(pluginRoot,'skills','document-learning'),entry,process.platform==='win32'?'junction':'dir');linked=true;}else throw e; }
-      registry.agents[agent]={path,commands:[command],entry,linked,pluginRoot:resolve(pluginRoot),runtime:process.execPath,script:join(pluginRoot,'bin','document-learning.mjs')};
+      registry.agents[agent]={path,commands:[command],entry,linked,pluginRoot:resolve(pluginRoot),runtime:process.execPath,script:join(pluginRoot,'bin','document-learning.mjs'),...(signalPermission?{signalPermission}:{})};
       await writeJson(registryPath,registry);
       results.push({agent,config:path,entry,status:'installed-awaiting-new-session'});
     }
+    let scheduled;
+    // 计划任务总是带上本次安装的数据目录，避免 --home 安装后任务整理默认目录。
+    const plan=scheduleCommands(config,{platform,base});
+    if(plan.create) {
+      if(schedule){for(const args of plan.create)await schtasks(args,runner);registry.schedule={name:TASK_NAME,intervalMinutes:config.schedule.intervalMinutes,runAtLogon:config.schedule.runAtLogon,created:new Date().toISOString()};scheduled={status:'created',name:TASK_NAME};}
+      else scheduled={status:'not-created',note:'计划任务需要用户确认：确认后用 install --schedule 重新运行，修改 schedule 配置后同样需要重新运行。',commands:plan.create.map(a=>`schtasks ${a.map(x=>/\s/.test(x)?`"${x.replaceAll('"','\\"')}"`:x).join(' ')}`)};
+    } else scheduled={status:'manual',instructions:plan.manual};
     await writeJson(registryPath,registry);
-    return {library:library.root,agents:results};
+    return {library:library.root,config:configFile,agents:results,schedule:scheduled};
   });
 }
-export async function uninstall({base=dataRoot(),agents}={}) {
+export async function uninstall({base=dataRoot(),agents,runner=exec,platform=process.platform}={}) {
   return withLock(join(base,'install'),async()=>{
     const path=join(base,'installation.json'),registry=await readJson(path,{schema:1,agents:{}}),results=[];
     for(const agent of agents || Object.keys(registry.agents)) {
       const record=registry.agents[agent];if(!record)continue;
       const current=await readJson(record.path,{});
-      await writeJson(record.path,removeOwned(current,record.commands));
+      const next=removeOwned(current,record.commands);removeSignalPermission(next,record.signalPermission);
+      await writeJson(record.path,next);
       if(record.linked) {
         try {if(resolve(await readlink(record.entry))===resolve(record.pluginRoot,'skills','document-learning'))await (process.platform==='win32'?rmdir(record.entry):unlink(record.entry));}
         catch(e){if(!['ENOENT','EINVAL'].includes(e.code))throw e;}
       }
       delete registry.agents[agent];results.push({agent,status:'removed; personal-library-preserved'});
+    }
+    if(registry.schedule&&!Object.keys(registry.agents).length) {
+      // 删除只需要任务名，不读取配置：配置文件无效时也能卸载。
+      if(platform==='win32')for(const name of [TASK_NAME,`${TASK_NAME}-Logon`])await schtasks(['/Delete','/F','/TN',name],runner).catch(()=>{});
+      delete registry.schedule;results.push({schedule:TASK_NAME,status:'removed'});
     }
     await writeJson(path,registry);return results;
   });
@@ -120,11 +160,19 @@ export async function doctor({base=dataRoot()}={}) {
       }
       hookTrust={status:missing.length?'needs-review':'record-present-unverified',missing,nextStep:'在原生 Codex 中输入 /hooks，审核并信任文档学习条目；程序不修改信任。'};
     }
-    agents.push({agent,configured,callbackObserved:active.some(s=>!!s.lastStart),lastStart:active.map(s=>s.lastStart).filter(Boolean).sort().at(-1)||null,pending:active.reduce((n,s)=>n+[s.current,...(s.pending || [])].filter(t=>t&&!isTerminal(t)).length,0),...(hookTrust?{hookTrust}:{})});
+    let rememberPermission;
+    if(agent==='claude') {
+      const rule=rememberAllowRule(record.pluginRoot);
+      rememberPermission={status:Array.isArray(config.permissions?.allow)&&config.permissions.allow.includes(rule)?'configured-unverified':'not-configured',rule,note:'可选：install --allow-claude-signal 只授权以绝对路径运行 remember；deny/ask 与托管策略仍由宿主决定。'};
+    }
+    agents.push({agent,configured,callbackObserved:active.some(s=>!!s.lastStart),lastStart:active.map(s=>s.lastStart).filter(Boolean).sort().at(-1)||null,...(hookTrust?{hookTrust}:{}),...(rememberPermission?{rememberPermission}:{})});
   }
+  let config,configError=null;
+  try{config=await loadConfig(base);}catch(error){configError=error.message;}
+  const consolidation=await consolidationStatus(library);
   let writable=true;
   try {await access(library.root,constants.W_OK);}catch{writable=false;}
-  return {status:!writable?'library-read-only':agents.some(a=>a.hookTrust?.status==='needs-review'&&!a.callbackObserved)?'awaiting-hook-trust':'ready',library:library.root,revision:state.revision,ruleCount:state.rules.filter(r=>r.status==='active').length,archivedRuleCount:state.rules.filter(r=>r.status==='archived').length,skillCount:Object.keys(state.skills).length,deferredPublications:state.pendingPublications?.length || 0,backgroundIgnored:state.background?.count || 0,binding,agents,note:'配置存在、宿主信任、真实 SessionStart 与完成回执分别报告。信任记录存在不代表当前定义哈希已经通过核对；以宿主审核和真实回调为准。'};
+  return {status:!writable?'library-read-only':configError?'config-invalid':agents.some(a=>a.hookTrust?.status==='needs-review'&&!a.callbackObserved)?'awaiting-hook-trust':consolidation.stale?'consolidation-stale':'ready',config:configError?{path:userConfigPath(base),error:configError}:{path:userConfigPath(base),effective:config},consolidation:{lastRun:consolidation.last?.at || null,lastReport:consolidation.last?.report || null,lastJudge:consolidation.last?.judge || null,pendingSessions:consolidation.pending,pendingProposals:consolidation.proposals,stale:consolidation.stale,schedule:installation.schedule || null},library:library.root,revision:state.revision,ruleCount:state.rules.filter(r=>r.status==='active').length,archivedRuleCount:state.rules.filter(r=>r.status==='archived').length,skillCount:Object.keys(state.skills).length,deferredPublications:state.pendingPublications?.length || 0,backgroundIgnored:state.background?.count || 0,binding,agents,note:'配置存在、宿主信任、真实 SessionStart 与后台整理分别报告。信任记录存在不代表当前定义哈希已经通过核对；以宿主审核和真实回调为准。'};
 }
 
 export async function syncPersonalSkills({base=dataRoot(),library,replaceTargets=[]}={}) {

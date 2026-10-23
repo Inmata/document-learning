@@ -32,7 +32,7 @@ export function claudeCommand() {
   }
   throw new Error('未找到可直接执行的 Claude Code；可通过 JSON 命令后端指定可执行文件');
 }
-export function createProvider(config={type:'claude'}) {
+export function createProvider(config={type:'claude'},{schema=learningSchema,instructions=learnerInstructions,check=output=>{if(typeof output?.document!=='boolean')throw new Error('历史模型输出缺少 document 判断');}}={}) {
   let settings={};
   if(config.type==='claude') {
     try{settings=JSON.parse(readFileSync(join(homedir(),'.claude','settings.json'),'utf8').replace(/^\uFEFF/,''));}
@@ -41,25 +41,27 @@ export function createProvider(config={type:'claude'}) {
   const model=config.model || settings.model;
   const routing={};
   for(const key of ['ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_BASE_URL','ANTHROPIC_MODEL','HTTP_PROXY','HTTPS_PROXY','NO_PROXY'])if(typeof settings.env?.[key]==='string')routing[key]=settings.env[key];
+  // 配置指定的网关只覆盖整理子进程的路由，不改动宿主设置。
+  Object.assign(routing,config.environment || {});
   const provider=async request=>{
     const claude=config.type==='claude';
     const base=claude?claudeCommand():{command:config.command,args:config.args || []};
     if(!base.command) throw new Error('历史模型后端尚未配置');
     const args=[...base.args];
-    if(claude) args.push('--bare','-p','--output-format','json','--json-schema',JSON.stringify(learningSchema),'--tools','','--disable-slash-commands','--no-session-persistence','--strict-mcp-config','--mcp-config','{"mcpServers":{}}','--settings',JSON.stringify({disableAllHooks:true,...(settings.apiKeyHelper?{apiKeyHelper:settings.apiKeyHelper}:{})}),'--system-prompt',learnerInstructions,...(model?['--model',model]:[]));
-    const input=claude?JSON.stringify(request):JSON.stringify({instructions:learnerInstructions,schema:learningSchema,input:request});
+    if(claude) args.push('--bare','-p','--output-format','json','--json-schema',JSON.stringify(schema),'--tools','','--disable-slash-commands','--no-session-persistence','--strict-mcp-config','--mcp-config','{"mcpServers":{}}','--settings',JSON.stringify({disableAllHooks:true,...(settings.apiKeyHelper?{apiKeyHelper:settings.apiKeyHelper}:{})}),'--system-prompt',instructions,...(model?['--model',model]:[]),...(config.effort?['--effort',config.effort]:[]));
+    const input=claude?JSON.stringify(request):JSON.stringify({instructions,schema,input:request});
     const result=await runProcess(base.command,args,input,{cwd:request.sandbox,timeout:config.timeout || 120000,environment:routing});
     let output,metadata;
     try {output=JSON.parse(result);} catch {throw new Error('模型后端没有返回 JSON；原始输出保留在后端自身诊断中');}
     if(claude) {
-      if(output.is_error) throw new Error(`历史模型后端失败：${String(output.result || output.error).slice(0,300)}`);
+      if(output.is_error) throw new Error(`历史模型后端失败：${String(output.result || output.error || output.terminal_reason).slice(0,300)}`);
       metadata={usage:output.usage || null,costUsd:output.total_cost_usd || 0,models:Object.keys(output.modelUsage || {}),providerIdentity:provider.identity};
       output=output.structured_output || (typeof output.result==='string'?JSON.parse(output.result):output.result);
     }
-    if(typeof output?.document!=='boolean') throw new Error('历史模型输出缺少 document 判断');
+    check(output);
     return {...output,...(metadata?{_meta:metadata}:{})};
   };
-  provider.identity=hash({config:{...config,env:undefined},model:model || 'host-default',isolation:'bare-no-tools-no-skills-no-hooks'});
+  provider.identity=hash({config:{...config,env:undefined,environment:Object.keys(config.environment || {}).sort()},model:model || 'host-default',isolation:'bare-no-tools-no-skills-no-hooks',...(schema!==learningSchema?{schema:hash(schema)}:{})});
   return provider;
 }
 export function runProcess(command,args,input,{cwd,timeout=120000,environment={},worker=true}={}) {
@@ -74,7 +76,13 @@ export function runProcess(command,args,input,{cwd,timeout=120000,environment={}
     child.stdout.on('data',v=>{stdout+=v;if(stdout.length>4*1024*1024){child.kill();done(new Error('模型输出超过 4MB 限制'));}});
     child.stderr.on('data',v=>{stderr=(stderr+v).slice(-2000);});
     child.stdin.on('error',e=>{if(e.code!=='EPIPE')done(e);});
-    child.on('close',code=>code===0?done(null,stdout):done(new Error(`模型后端退出 ${code}：${stderr.slice(-500)}`)));
+    // claude -p 出错时也可能只在 stdout 的 JSON 里给出原因（如 Prompt is too long）。
+    child.on('close',code=>{
+      if(code===0)return done(null,stdout);
+      let reason=stderr.slice(-500);
+      try{const o=JSON.parse(stdout);reason ||= String(o.result || o.terminal_reason || '').slice(0,300);}catch{}
+      done(new Error(`模型后端退出 ${code}：${reason}`));
+    });
     child.stdin.end(input);
   });
 }

@@ -50,7 +50,8 @@ function normalizeRule(state, input) {
   const sources = evidence.map(e => state.sources[e.source]);
   const generalExplicit = input.scopeBasis === 'explicit' && evidence.some(e=>/所有|一律|全局|任何|个人默认|all (?:documents|reports|tasks)|always/i.test(e.quote));
   if (!Object.keys(scope).length && input.category !== 'method' && !generalExplicit) throw new Error('经验缺少适用范围');
-  if (!Object.keys(scope).length && input.category === 'method' && input.strength === 'required' && !generalExplicit) throw new Error('单个案例不能建立无条件强制的方法');
+  // 核心层（无条件或只限工作区）经验需要用户原话明确说明适用全部文档；否则先按文档或类型记录，再经晋升确认扩大。
+  if (Object.keys(scope).every(k => k === 'workspace') && input.category === 'method' && !generalExplicit) throw new Error('单个案例不能直接建立所有文档通用的经验，请限定 task 或 kind，跨文档通用需经晋升确认');
   if (input.category === 'fact' && !scope.task) throw new Error('个案事实必须限定到任务范围');
   if (input.category === 'preference' && !scope.task) {
     const explicit = input.scopeBasis === 'explicit' && evidence.some(e => /以后|今后|所有|一律|默认|这种|这类|always|all reports|by default|these reports/i.test(e.quote));
@@ -84,11 +85,27 @@ export function mergeLearning(state, payload = {}) {
     const old = state.rules.find(r => r.id === rule.id);
     if (old) {
       if (old.status === 'retired') { changes.push({ id: old.id, action: 'skip-retired' }); continue; }
+      // 已晋升的旧规则不能被重复反馈复活；证据并入晋升后的规则。
+      if (old.status === 'superseded') { const target=state.rules.find(r=>r.id===old.supersededBy&&r.status==='active'); if(target)for(const e of rule.evidence)if(!target.evidence.some(x=>stable(x)===stable(e)))target.evidence.push(e); changes.push({ id: old.id, action: 'skip-superseded', target: old.supersededBy }); continue; }
       const before = stable(old.evidence);
       for (const e of rule.evidence) if (!old.evidence.some(x => stable(x) === stable(e))) old.evidence.push(e);
       // Repetition cannot strengthen, broaden, or reactivate a rule.
       changes.push({ id: old.id, action: before === stable(old.evidence) ? 'skip' : 'merge-evidence' });
     } else { state.rules.push(rule); changes.push({ id: rule.id, action: 'create' }); }
+  }
+  for (const item of payload.attach || []) {
+    // 把同一事实的新证据并入已有规则，而不是另建近义规则。
+    let old = state.rules.find(r => r.id === item.id);
+    if (old?.status === 'superseded') old = state.rules.find(r => r.id === old.supersededBy);
+    if (!old || old.status !== 'active') throw new Error('证据合并目标不是有效经验');
+    const evidence = verifyEvidence(state, item.evidence, { repository: old.category === 'policy' });
+    for (const e of evidence) {
+      const s = state.sources[e.source];
+      if (scopeMatch(old.scope, { ...s.context, task: s.task || s.context.task }) === 'no') throw new Error(`合并证据与经验范围矛盾：${old.id} / ${s.id}`);
+    }
+    const before = stable(old.evidence);
+    for (const e of evidence) if (!old.evidence.some(x => stable(x) === stable(e))) old.evidence.push(e);
+    changes.push({ id: old.id, action: before === stable(old.evidence) ? 'skip' : 'merge-evidence' });
   }
   for (const retirement of payload.retire || []) {
     verifyEvidence(state, retirement.evidence);
@@ -108,6 +125,7 @@ export function mergeLearning(state, payload = {}) {
   for(const r of state.rules) {
     if(r.status!=='active')continue;
     const tasks=new Set(r.evidence.map(e=>state.sources[e.source].task).filter(Boolean));
+    r.tier=tierOf(r.scope);r.support=tasks.size;
     const conflicting=state.rules.some(other=>other.status==='active'&&other.id!==r.id&&other.key===r.key&&other.value!==r.value&&stable(other.scope)===stable(r.scope));
     r.maturity=conflicting?'conflicting':(tasks.size>1?'supported-in-several-tasks':(r.scope.task?'supported-in-scope':'observed'));
     r.exceptions=state.rules.filter(other=>other.status==='active'&&other.key===r.key&&other.value!==r.value&&narrower(other.scope,r.scope)).map(other=>other.id);
@@ -116,7 +134,84 @@ export function mergeLearning(state, payload = {}) {
 }
 export const applyLearning = (library, payload) => library.transact('learn', state => mergeLearning(state, payload));
 
-function narrower(a, b) {
+// 核心层：无条件或只限工作区；文档类型层：不含 task；单份文档层：含 task。
+export function tierOf(scope = {}) {
+  const keys = Object.keys(scope);
+  if (!keys.length || keys.every(k => k === 'workspace')) return 'core';
+  return scope.task ? 'doc' : 'type';
+}
+// 支持度只按证据覆盖的不同文档计，同一文档的重复反馈不增加支持度。
+export const support = (state, rule) => new Set(rule.evidence.map(e => state.sources[e.source]?.task).filter(Boolean)).size;
+export function refreshMaturity(state) { return mergeLearning(state, {}); }
+
+// 来源范围是否落在目标范围内。单份文档的规则只写了 task，其文档类型等条件取自证据来源的场景。
+function within(state, rule, scope) {
+  if (stable(rule.scope) === stable(scope) || narrower(rule.scope, scope)) return true;
+  if (!rule.scope.task) return false;
+  const contexts = rule.evidence.map(e => state.sources[e.source]?.context || {});
+  return Object.entries(scope).every(([k, v]) => rule.scope[k] !== undefined ? values(rule.scope[k]).every(x => values(v).includes(x)) : contexts.every(c => c[k] !== undefined && values(c[k]).every(x => values(v).includes(x))));
+}
+export function validatePromotion(state, proposal, { minDocsForType = 2, minDocsForCore = 3 } = {}) {
+  if (!Array.isArray(proposal.from) || proposal.from.length < 1) throw new Error('晋升提案缺少来源经验');
+  const rules = [...new Set(proposal.from)].map(id => state.rules.find(r => r.id === id));
+  if (rules.some(r => !r || r.status !== 'active')) throw new Error('晋升来源必须是有效经验');
+  if (typeof proposal.text !== 'string' || !proposal.text.trim() || proposal.text.length > 6000) throw new Error('晋升提案缺少合并后的经验正文');
+  if (!['suggestion','default','required'].includes(proposal.strength)) throw new Error('晋升提案的执行强度无效');
+  const scope = normalizeScope(proposal.scope || {});
+  if (scope.task) throw new Error('晋升目标不能限定到单份文档');
+  for (const r of rules) if (!within(state, r, scope)) throw new Error(`晋升目标范围必须覆盖来源经验：${r.id}`);
+  if (rules.every(r => stable(r.scope) === stable(scope))) throw new Error('晋升目标范围必须比来源经验更宽');
+  const evidence = [];
+  for (const r of rules) for (const e of r.evidence) if (!evidence.some(x => stable(x) === stable(e))) evidence.push(e);
+  for (const e of evidence) {
+    const s = state.sources[e.source];
+    if (s && scopeMatch(scope, { ...s.context, task: undefined }) === 'no') throw new Error(`晋升范围与证据场景矛盾：${s.id}`);
+  }
+  const tasks = new Set(evidence.map(e => state.sources[e.source]?.task).filter(Boolean));
+  const tier = tierOf(scope), required = tier === 'core' ? minDocsForCore : minDocsForType;
+  if (tasks.size < required) throw new Error(`晋升到${tier === 'core' ? '核心' : '文档类型'}层至少需要 ${required} 份文档的证据，当前 ${tasks.size} 份`);
+  const categories = new Set(rules.map(r => r.category));
+  if (categories.has('fact')) throw new Error('个案事实不能晋升');
+  // 晋升不能把来源中最弱的要求强化。
+  const rank = { suggestion: 0, default: 1, required: 2 };
+  if (rank[proposal.strength] > Math.min(...rules.map(r => rank[r.strength]))) throw new Error('晋升强度不能高于来源经验');
+  return { rules, scope, evidence, tier, tasks: tasks.size, category: categories.size === 1 ? rules[0].category : (categories.has('constraint') ? 'constraint' : rules[0].category) };
+}
+export function applyPromotion(state, proposalId, confirmationEvidence, options = {}) {
+  const proposal = (state.proposals || []).find(p => p.id === proposalId);
+  if (!proposal || proposal.status !== 'pending') throw new Error('晋升提案不存在或已处理');
+  const refs = Array.isArray(confirmationEvidence) ? confirmationEvidence : [confirmationEvidence];
+  const confirmation = refs.map(ref => typeof ref === 'string' ? { source: ref } : ref).map(ref => {
+    const s = state.sources[ref.source];
+    // 确认只认原始用户输入（问答回答或用户消息），助手文本与回放输出都不算。
+    if (!s || s.role !== 'user' || s.origin === 'replay-output') throw new Error('晋升确认必须来自用户的原始回答');
+    // 只认提问工具的回答，且不能是来源经验自身的证据或提案提出之前的回答。
+    if (s.origin !== 'user-question') throw new Error('晋升确认必须是用户在提问工具中的回答');
+    if ((proposal.from || []).some(id => state.rules.find(r => r.id === id)?.evidence.some(e => e.source === s.id))) throw new Error('晋升确认不能引用来源经验的证据');
+    if (proposal.at && s.at && s.at < proposal.at) throw new Error('晋升确认早于提案，不能作为本提案的同意');
+    if (ref.quote !== undefined && (typeof ref.quote !== 'string' || !s.text.includes(ref.quote))) throw new Error('确认引文与原始来源不一致');
+    return { source: s.id, quote: ref.quote ?? s.text.slice(0, 500) };
+  });
+  if (!confirmation.length) throw new Error('晋升需要用户确认');
+  const checked = validatePromotion(state, proposal, options);
+  const first = checked.rules[0];
+  const key = proposal.key || first.key, value = proposal.value || first.value;
+  const rule = { key, value, text: proposal.text.trim(), category: checked.category, strength: proposal.strength, scope: checked.scope, scopeBasis: 'promoted', evidence: checked.evidence, status: 'active', maturity: 'observed', promotion: { proposal: proposal.id, from: checked.rules.map(r => r.id), confirmation, at: new Date().toISOString() } };
+  rule.id = hash({ key, value, scope: rule.scope, category: rule.category }).slice(0, 24);
+  const existing = state.rules.find(r => r.id === rule.id);
+  if (existing && existing.status !== 'active') throw new Error('目标经验已停用或已被替代，不能通过晋升复活');
+  if (existing) { for (const e of rule.evidence) if (!existing.evidence.some(x => stable(x) === stable(e))) existing.evidence.push(e); existing.promotion = rule.promotion; }
+  else state.rules.push(rule);
+  // 比晋升结果更强的来源（如类型层 required）保留原样，只替代不强于结果的来源。
+  const rank = { suggestion: 0, default: 1, required: 2 }, replaced = checked.rules.filter(r => r.id !== rule.id && rank[r.strength] <= rank[rule.strength]);
+  for (const r of replaced) { r.status = 'superseded'; r.supersededBy = rule.id; r.supersededAt = rule.promotion.at; }
+  for (const o of state.observations) if (o.status === 'observed' && o.evidence.some(e => rule.evidence.some(x => x.source === e.source)) && narrower(o.scope, rule.scope)) { o.status = 'promoted'; o.promotedTo = rule.id; }
+  proposal.status = 'applied'; proposal.result = rule.id; proposal.confirmation = confirmation;
+  refreshMaturity(state);
+  return { id: rule.id, superseded: replaced.map(r => r.id), kept: checked.rules.filter(r => r.id !== rule.id && !replaced.includes(r)).map(r => r.id), tier: checked.tier, support: checked.tasks };
+}
+
+export function narrower(a, b) {
   return Object.entries(b).every(([k, v]) => a[k] !== undefined && values(a[k]).every(x => values(v).includes(x))) && stable(a) !== stable(b);
 }
 export async function retrieve(library, context, { limit = 30 } = {}) {

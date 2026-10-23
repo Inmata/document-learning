@@ -1,5 +1,5 @@
 {
-  "description": "文档任务轻量判断、经验检索与逐轮学习回执",
+  "description": "登记会话请求与问答回答，会话开始和结束时后台触发经验整理",
   "hooks": {
     "SessionStart": [
       {
@@ -40,55 +40,7 @@
         ]
       }
     ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/bin/document-learning.mjs\" hook --agent codex",
-            "timeout": 10,
-            "commandWindows": "node \"$env:PLUGIN_ROOT/bin/document-learning.mjs\" hook --agent codex"
-          }
-        ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/bin/document-learning.mjs\" hook --agent codex",
-            "timeout": 10,
-            "commandWindows": "node \"$env:PLUGIN_ROOT/bin/document-learning.mjs\" hook --agent codex"
-          }
-        ]
-      }
-    ],
-    "PostCompact": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/bin/document-learning.mjs\" hook --agent codex",
-            "timeout": 10,
-            "commandWindows": "node \"$env:PLUGIN_ROOT/bin/document-learning.mjs\" hook --agent codex"
-          }
-        ]
-      }
-    ],
     "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/bin/document-learning.mjs\" hook --agent codex",
-            "timeout": 3,
-            "commandWindows": "node \"$env:PLUGIN_ROOT/bin/document-learning.mjs\" hook --agent codex"
-          }
-        ]
-      }
-    ],
-    "Interrupt": [
       {
         "hooks": [
           {

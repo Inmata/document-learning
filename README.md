@@ -1,10 +1,10 @@
 # 文档持续学习
 
-面向 Codex 和 Claude Code 的本地插件。安装后，在文档任务开始前检索适用经验，在文档任务完成前自动整理有依据的反馈、维护个人技能；普通聊天和编程不要求执行学习命令。公开项目只包含程序和虚构示例；每个使用者的会话、偏好、案例和技能分别保存在自己的电脑上。
+面向 Codex 和 Claude Code 的本地插件。流程是“自动记录 → 批量整理 → 编译手册”：hooks 只登记会话；后台定期扫描宿主会话记录，判断哪些是文档任务，提炼有原话依据的经验，合并重复证据，再编译成按层级排序的经验手册。写文档时模型读手册即可，普通聊天和编程不需要执行任何学习命令。公开项目只包含程序和虚构示例；每个使用者的会话、偏好、案例和技能都保存在自己的电脑上。
 
 ## 安装
 
-需要 Node.js 24 或以上。没有运行时 npm 依赖。
+需要 Node.js 24 或以上。运行时依赖只有固定版本的 `@jkudish/jev-agent-tools`（Jev 判断层，可在配置中关闭）；首次使用先运行 `npm install`。
 
 在项目目录运行：
 
@@ -13,7 +13,25 @@ node bin/document-learning.mjs install
 node bin/document-learning.mjs doctor
 ```
 
-默认同时配置 Codex 和 Claude Code 的用户级 hooks，并安装技能入口。保留原有 hooks 和设置；重复安装不会叠加本插件。安装后新开会话验证。`doctor` 分别显示配置是否存在、是否收到真实 SessionStart、是否还有未完成回执。
+默认同时配置 Codex 和 Claude Code 的用户级 hooks（SessionStart、UserPromptSubmit、PostToolUse、SessionEnd），安装技能入口，并在缺失时写入带注释的默认配置文件。保留原有 hooks 和设置；重复安装不会叠加本插件。安装后新开会话验证。
+
+后台整理的计划任务需要确认后创建。`install` 会列出将执行的 `schtasks` 命令；确认后运行：
+
+```powershell
+node bin/document-learning.mjs install --schedule
+```
+
+Windows 上创建两个计划任务：每 `schedule.intervalMinutes` 分钟一次、登录时一次（`schedule.runAtLogon`），都只运行 `consolidate --if-due` 到期检查；`uninstall` 移除全部宿主后删除它们。其他系统输出 cron 或 launchd 配置，由用户自行添加。修改 `schedule` 后需重新运行 `install --schedule`。另外，每次会话开始和结束时 hooks 也会在后台触发一次到期检查。
+
+Claude Code 自动模式会审查模型发出的命令和提问工具调用，用户要求的“记住”、晋升提问与确认都可能被拦截。如希望不被拦截，可显式授权：
+
+```powershell
+node bin/document-learning.mjs install --agent claude --allow-claude-signal
+```
+
+该选项添加 `Bash(node "<本插件绝对路径>/bin/document-learning.mjs" remember *)`、同一路径的 `proposals` 与 `promote *`，以及提问工具 `AskUserQuestion`、`mcp__codeg-mcp__ask_user_question`，不授权其他子命令。promote 只接受提问工具中的用户回答作确认，放行命令不会绕过用户同意。重复安装保留授权，卸载只移除插件新增的规则，保留原有 allow/ask/deny；显式 deny/ask 或托管策略仍由宿主执行。参见 [Claude Code 权限规则](https://code.claude.com/docs/en/permissions)。
+
+Codex 的原生提问工具 `request_user_input`（含 `_async`）同样被识别，答案按问题 id 对回问题；default 模式下需在 `~/.codex/config.toml` 的 `[features]` 中开启 `default_mode_request_user_input = true`。
 
 已有技能仓库作为只读学习来源时：
 
@@ -61,20 +79,67 @@ node bin/document-learning.mjs uninstall
 
 也可以通过宿主原生插件机制安装本项目：根 `plugin.json` 提供 Agent Plugins/OpenAI 格式，另有 Codex 与 Claude Code 兼容清单。原生插件安装与上述用户级 hooks 安装选择一种。Codex 的 hook 信任由宿主处理，安装程序不修改信任记录；原生插件安装后仍需在宿主中启用并确认 hook 信任。源码 hooks 需要在本机可执行，GitHub 分发不等于进入官方公共插件目录。
 
+## 配置文件
+
+位于数据目录下的 `config.json`（Windows 为 `%LOCALAPPDATA%\DocumentLearning\config.json`）。缺少的字段使用默认值，以 `_` 开头的键只是说明；无效值会报错并指出字段，`doctor` 显示生效配置。
+
+| 字段 | 默认值 | 含义 |
+| --- | --- | --- |
+| `schedule.intervalMinutes` | 120 | 计划任务的检查间隔（分钟），修改后需重新 `install --schedule` |
+| `schedule.runAtLogon` | true | 登录时也检查一次 |
+| `consolidate.minSessions` | 3 | 待整理会话达到该数量才调用模型 |
+| `consolidate.maxWaitHours` | 24 | 有待整理会话且距上次整理超过该小时数时也整理 |
+| `consolidate.maxSessionsPerRun` | 20 | 单次整理最多处理的会话数 |
+| `consolidate.model` | null | 整理模型；null 使用 Claude Code 当前默认模型 |
+| `consolidate.effort` | `high` | 整理模型的推理强度：low、medium、high、xhigh、max |
+| `consolidate.baseUrl` / `consolidate.apiKey` | null | 只给整理进程使用的 Anthropic 兼容网关（如本机 magpie `http://127.0.0.1:3425`）；null 跟随 `~/.claude/settings.json`。apiKey 明文保存，只适合本机网关的占位值 |
+| `sources.claude` / `sources.codex` | true | 是否扫描 `~/.claude/projects` / `~/.codex/sessions` |
+| `sources.excludePaths` | `*codeg-acp*`、`*workflow*`、`*\Temp\*` | 按完整路径或工作目录排除的通配模式 |
+| `judge.provider` | `jev` | `jev` 先用 Jev 筛掉明显不是文档的会话并合并同义经验；`none` 全部交给整理模型 |
+| `judge.documentThreshold` | 0.85 | Jev 自动判定所需的最低概率 |
+| `manual.maxChars` | 3000 | 单个手册的最大字数，超出按排序截断并注明省略条数 |
+| `promotion.minDocsForType` / `minDocsForCore` | 2 / 3 | 晋升到文档类型层 / 核心层所需的最少文档数 |
+
+Jev 的凭据只从环境变量读取（`TYPESAFE_API_KEY`、`OPENROUTER_API_KEY` 等，见该包文档），插件不保存、不输出。没有凭据或调用失败时自动回退为整理模型独立判断，并在整理报告中注明。
+
 ## 实际工作过程
 
-1. SessionStart 连接个人库；压缩和恢复时读取已保存的状态。宿主自身的后台模型调用（ambient 建议生成、审批复核等）不建立会话、不建轮、不注入指导；插件只汇总忽略次数，由 `doctor` 的 `backgroundIgnored` 显示。会话状态按容量修剪，只淘汰全部轮已终结且不参与恢复的旧会话。
-2. 新需求到达，当前模型先判断是否实际进行文档工作。普通编程和插件设计讨论不会加载整套文档经验。
-3. 文档任务提交用途、读者、格式等已知条件，检索结果在计划前返回；冲突和条件未知分别展示给模型。
-4. 模型实施当前任务。明确要求自动应用；普通偏好在条件匹配时参考；缺少关键用途信息时才补问具体取舍。
-5. 完成前提交经验与技能提案，以及 `skillDecision` 的创建、更新、停用或不变理由。程序核对原始来源、引文、范围、正反例和当前文件指纹，自动写回个人目录。
-6. 只有实际文档任务提交学习判断和回执；普通聊天、编程和计划讨论不要求模型执行任何文档学习命令。Stop 只为已判定为文档且未完成回执的轮次补偿一次。中断、会话关闭或后续轮次只在文档轮保留待补学，下一次文档任务认领一项恢复；未分类轮直接结束，不再跨会话复活。票据绑定会话、轮次和十分钟租期；同一轮被认领超过 5 次或超过 24 小时仍未完成即归档为 `abandoned`，不再反复认领；只补学，不继续旧业务操作，不循环续轮。
+1. 会话中，hooks 只登记当前请求和问答工具的用户回答（供 `remember` 和晋升确认引用），并提示一行：需要立即记住时运行 `remember`，写文档前读手册。宿主自身的后台模型调用不建立会话。
+2. 后台整理（`consolidate --if-due`）增量扫描宿主会话文件：按文件记录水位，未变化的文件不读取，被截断或重建时从头开始；排除路径和整理器自身的会话不进入收件箱。首次扫描只排队最近 7 天的会话。
+3. 收件箱中待整理会话达到 `minSessions`，或非空且超过 `maxWaitHours` 时才调用模型；否则不产生任何模型请求。整理持有独占锁，已有整理在运行时直接退出。
+4. Jev 先丢弃高置信的非文档会话；其余会话连同全部有效经验交给整理模型（`claude --bare -p`，无工具、无 hooks、无技能）。模型判断文档会话及其 task、kind，逐字引用用户原话提炼经验；与已有经验相同的改为合并证据，同一要求出现在多份文档时提出晋升提案。程序校验引文和范围，不通过时带错误重试最多 3 次；仍失败的这批会话按失败次数推迟 1、2、4… 天再试，其他会话照常整理。新经验至少限定文档或类型，除非用户原话明确说所有文档；所有文档通用的经验通常经晋升产生。
+5. 写入后编译手册，并在 `history/consolidations/<运行标识>/` 保存输入、模型结果和 `report.md`。只有被经验引用的用户消息会存入个人库。
+6. 超过 3 天没有整理而仍有待处理会话时，SessionStart 会提示运行 `doctor` 检查计划任务。
 
-实时路径使用当前会话模型，不默认另开后台模型。非文档任务不要求模型调用判断命令，只保留本地 hook 的固定开销；显式加载入口技能会增加该技能正文的上下文。匹配经验以摘要返回，完整引文按需查看。
+```powershell
+node bin/document-learning.mjs consolidate --now           # 立即整理，不看阈值
+node bin/document-learning.mjs consolidate --all-existing  # 迁移：反复整理直到收件箱清空，并复核已有经验
+```
 
-信号命令只读取输入并输出 JSON，由 PostToolUse hook 保存结果，计划模式不需要模型修改工作区文件。Windows PowerShell 5.1 的复杂中文 JSON 建议使用 `--base64`，避免原生管道编码损失。技能入口包含协议说明。
+### 经验层级与手册
 
-计划模式只保存私有学习记录与候选，不发布技能文件。判定依据是显式声明的模式：宿主上报的 `permission_mode`，或模型在 begin 时提交的 `context.mode`（`--mode plan` 或 `--plan`）。Codex/Codeg 在计划模式下 `permission_mode` 可能仍是 `default`，此时必须由模型显式声明；插件不根据 `update_plan` 或工具名推断，也不接受 `planning`、`readonly` 等近似写法。下一次同一文档处于可实施模式时，模型对照当前资料重新整理再提交；不会在另一个任务中执行旧计划。`doctor` 显示尚未发布的候选数量。
+- 核心层：没有条件（或只限工作区）的经验，进 `knowledge/core.md`。
+- 文档类型层：限定 kind、技能、工序等但不限单份文档，进 `knowledge/<kind>.md`，按“通用 / 技能 X / 工序 Y”分节；不限 kind 的进 `knowledge/conditional.md`。
+- 单份文档层：限定 task 的偏好、参数和事实，只进 `cases/<task>.md`，不出现在手册中。
+
+手册按 required → default → suggestion 排序，同强度按覆盖的不同文档数、证据条数排序，格式为 `- [required·3份文档] 经验`。`knowledge/index.md` 列出全部层级和完整范围。绑定个人技能仓库时，手册写入该仓库，个人技能的管理区只保留一行指向对应类型的手册。
+
+### 记住与晋升
+
+用户明确要求记住时，模型运行 `remember`，引用本轮用户原话立即入库并更新手册：
+
+```powershell
+node bin/document-learning.mjs remember --session <hook给出的会话> --text "实验报告的结论段先写数据" --quote "用户原话" --kind experiment-report
+```
+
+晋升把多份文档中的同一条局部经验合并为更宽范围的一条：范围必须更宽，覆盖至少 `minDocsForType`（核心层为 `minDocsForCore`）份文档，强度不高于来源经验，且需要用户确认。确认只认提案提出之后用户在提问工具中的回答，不能引用来源经验自身的证据。新经验的证据是来源经验的并集，来源经验标为已替代（superseded），之后的重复反馈并入新经验，不会复活旧条目。
+
+```powershell
+node bin/document-learning.mjs proposals
+node bin/document-learning.mjs promote --id <提案> --confirm-source <用户确认回答的source>
+```
+
+有待确认提案时 SessionStart 提示一行；模型用提问工具征得同意后再执行 `promote`。
 
 ## 经验如何保持边界
 
@@ -110,9 +175,7 @@ node bin/document-learning.mjs skill-rollback --name '技能标识' --version '�
 
 个人技能目录自身处于 Git 仓库中时，发布前目标文件干净且索引可写，就只提交本次管理的文件，保留其他已暂存内容。默认使用个人快照和技能备份；不自动初始化 Git、执行仓库 hooks 或推送。
 
-## 查看学习产物与当前资料补学
-
-直接打开个人库的 `knowledge/index.md` 查看有效经验、条件和原始引文；`cases/index.md` 保存案例事实及旧记录；`skills/` 是实际可调用技能。`catalog` 命令可重新生成阅读目录。
+直接打开手册目录的 `knowledge/core.md`、`knowledge/<kind>.md` 和 `knowledge/index.md` 查看有效经验；`cases/` 保存单份文档经验、案例事实与已替代的历史记录；`skills/` 是实际可调用技能。`catalog` 命令可重新生成全部手册。
 
 当前补学与时间回放分开。当前会话可以综合完整用户日志、当前技能及 references、调用配置和后续差异，按学习 schema 整理 JSON 后执行：
 
@@ -163,6 +226,6 @@ npm run demo
 claude plugin validate .
 ```
 
-测试覆盖偏好冲突、跨对象复用、证据伪造、范围扩大、重复记录、双宿主回执、一次补偿、安装卸载、手动修改、技能停用及回退、混合提交、未来信息隔离和中断恢复。演示采用明确标注的虚构记录与固定后端，仅展示程序链路。
+测试覆盖偏好冲突、跨对象复用、证据伪造、范围扩大、重复记录、会话增量扫描、到期判断与锁、批量整理的校验重试、经验晋升确认、手册编译、安装卸载、手动修改、技能停用及回退、混合提交、未来信息隔离和中断恢复。演示采用明确标注的虚构记录与固定后端，仅展示程序链路。
 
 宿主当前依据：[Codex hooks](https://learn.chatgpt.com/docs/hooks?site_variant=chatgpt&translationFallback=zh-Hans)、[OpenAI 插件打包](https://developers.openai.com/plugins/build/plugins)、[Claude Code hooks](https://code.claude.com/docs/en/hooks)、[Claude Code 插件清单](https://code.claude.com/docs/en/plugins-reference)。兼容性以本机诊断和新会话实测为准。

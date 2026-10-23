@@ -29,5 +29,8 @@
     "docs/",
     "examples/",
     "scripts/"
-  ]
+  ],
+  "dependencies": {
+    "@jkudish/jev-agent-tools": "0.2.1"
+  }
 }

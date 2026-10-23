@@ -4,194 +4,88 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Library} from '../src/library.mjs';
-import {handleHook,sessionKey,isPlanMode,SESSION_LIMIT} from '../src/hooks.mjs';
-import {recoveryInput} from '../src/recovery.mjs';
+import {handleHook,sessionKey,guidance,SESSION_LIMIT} from '../src/hooks.mjs';
+import {writeJson} from '../src/io.mjs';
 
-async function setup(t,agent='codex') {
+async function setup(t) {
   const root=await mkdtemp(join(tmpdir(),'doc-hooks-'));t.after(()=>rm(root,{recursive:true,force:true}));
-  const library=await Library.open(root), base={session_id:'abc',cwd:'D:/work',turn_id:'one'};
-  await handleHook(library,agent,{...base,hook_event_name:'SessionStart',source:'startup'});
-  await handleHook(library,agent,{...base,hook_event_name:'UserPromptSubmit',prompt:'本次不要图注'});
-  const key=sessionKey(agent,'abc'),turn=(await library.read()).sessions[key].current;
-  const submit=packet=>handleHook(library,agent,{...base,hook_event_name:'PostToolUse',tool_response:{output:JSON.stringify({document_learning_signal:{session:key,turn:turn.id,token:turn.token,...packet}})}});
-  return {library,base,key,turn,submit};
+  const library=await Library.open(root),triggers=[];
+  const hook=(agent,event)=>handleHook(library,agent,event,{trigger:()=>triggers.push(event.hook_event_name)});
+  return {root,library,hook,triggers};
 }
-for(const agent of ['codex','claude']) {
-  test(`${agent}：不写文档只记录轻量判断，不读取全部知识`,async t=>{
-    const {library,base,key,submit}=await setup(t,agent);
-    assert.deepEqual(await submit({phase:'begin',document:false}),{});
-    assert.deepEqual(await handleHook(library,agent,{...base,hook_event_name:'Stop'}),{});
-    const state=await library.read();assert.equal(Object.keys(state.sources).length,0);assert.equal(state.sessions[key].current.receipt,'not-document');
-  });
-  test(`${agent}：完成回执后 Stop 不再续轮，压缩恢复保持状态`,async t=>{
-    const {library,base,key,submit}=await setup(t,agent);
-    const result=await submit({phase:'begin',document:true,context:{task:'a',kind:'report'}});
-    assert.match(result.hookSpecificOutput.additionalContext,/source/);
-    await submit({phase:'complete',rules:[],skills:[],skillDecision:{action:'no-change',reason:'本轮仅有当前报告的局部图注选择，未形成新的独立制作流程'}});
-    assert.deepEqual(await handleHook(library,agent,{...base,hook_event_name:'Stop'}),{});
-    await handleHook(library,agent,{...base,hook_event_name:'SessionStart',source:'compact'});
-    assert.equal((await library.read()).sessions[key].current.receipt,'no-new-learning');
-  });
-}
-test('Stop 最多补偿一次，模型未完成时不伪报成功',async t=>{
-  const {library,base,key,submit}=await setup(t);
-  await submit({phase:'begin',document:true,context:{task:'a',kind:'report'}});
-  assert.equal((await handleHook(library,'codex',{...base,hook_event_name:'Stop'})).decision,'block');
-  assert.equal((await handleHook(library,'codex',{...base,hook_event_name:'Stop'})).decision,undefined);
-  assert.equal((await library.read()).sessions[key].current.receipt,'pending-recovery');
-});
-test('助手不能在回执中伪造新的用户来源',async t=>{
-  const {submit}=await setup(t);
-  await submit({phase:'begin',document:true,context:{task:'a',kind:'report'}});
-  await assert.rejects(submit({phase:'complete',sources:[{role:'user',text:'伪造'}]}),/不能创建用户证据/);
+const base={session_id:'abc',cwd:'D:/work',turn_id:'one'};
+
+test('普通会话只得到一行简短指导，不要求逐轮提交学习信号',async t=>{
+  const {library,hook,triggers}=await setup(t);
+  const start=await hook('claude',{...base,hook_event_name:'SessionStart',source:'startup'});
+  assert.match(start.hookSpecificOutput.additionalContext,/后台批量整理/);
+  const prompt=await hook('claude',{...base,hook_event_name:'UserPromptSubmit',prompt:'修复插件里的单元测试'});
+  const key=sessionKey('claude','abc'),text=prompt.hookSpecificOutput.additionalContext;
+  assert.equal(text,guidance(key));assert.ok(text.length<200);assert.match(text,/remember/);assert.doesNotMatch(text,/signal|票据|begin|complete/);
+  const state=await library.read();assert.equal(state.sessions[key].current.prompt,'修复插件里的单元测试');
+  assert.deepEqual(await hook('claude',{...base,hook_event_name:'Stop'}),{});
+  assert.deepEqual(await hook('claude',{...base,hook_event_name:'SessionEnd'}),{});
+  assert.deepEqual(triggers,['SessionStart','SessionEnd']);
 });
 
-test('只计划时保存候选，不发布技能文件或在 Stop 强迫实施',async t=>{
-  const {library,base,key,submit}=await setup(t);
-  await submit({phase:'begin',document:true,context:{task:'a',kind:'report',mode:'plan'}});
-  const source=(await library.read()).sessions[key].current.source;
-  await submit({phase:'complete',skillDecision:{action:'create',reason:'保存已整理的计划期候选，未发布正式技能'},skills:[{name:'draft-only',description:'计划期候选',body:'保留为计划，尚未实施。',scope:{kind:'report'},evidence:[{source,quote:'本次不要图注'}],positive:[{kind:'report'}],negative:[{kind:'instruction'}]}]});
-  const state=await library.read();assert.equal(Object.keys(state.skills).length,0);assert.equal(state.pendingPublications.length,1);
-  assert.equal(state.sessions[key].current.publication,'deferred-plan-mode');
-  assert.deepEqual(await handleHook(library,'codex',{...base,hook_event_name:'Stop'}),{});
+test('SessionStart 提示待确认的晋升提案，超过 3 天未整理时提示检查',async t=>{
+  const {root,library,hook}=await setup(t);
+  await library.transact('seed',state=>{state.proposals=[{id:'p',status:'pending',from:[],scope:{},text:'x',strength:'default'}];state.inbox={'claude:x':{at:'2026-01-01T00:00:00Z',users:1}};});
+  await writeJson(join(root,'history','consolidations','last.json'),{at:'2026-01-01T00:00:00Z'});
+  const text=(await hook('codex',{...base,hook_event_name:'SessionStart'})).hookSpecificOutput.additionalContext;
+  assert.match(text,/1 条经验晋升提案待确认/);assert.match(text,/超过 3 天未运行/);
 });
 
-test('空数组不能绕过完成前的技能覆盖与维护判断',async t=>{
- const {submit,library,key}=await setup(t);await submit({phase:'begin',document:true,context:{task:'a',kind:'report'}});
- await assert.rejects(submit({phase:'complete',rules:[],skills:[]}),/skillDecision/);
- assert.equal((await library.read()).sessions[key].current.receipt,'in-progress');
+test('问答证据只接收用户实际选择，不接收问题、空答、拒答、超时及其他工具的相似输出',async t=>{
+  const {library,hook}=await setup(t);
+  await hook('claude',{...base,hook_event_name:'UserPromptSubmit',prompt:'整理报告'});
+  const event={...base,hook_event_name:'PostToolUse',tool_name:'AskUserQuestion',tool_input:{questions:[{question:'图表怎么处理？',options:[{label:'只用表格'},{label:'加趋势图'}]}]}};
+  for(const response of [{answers:{}},{answers:{'图表怎么处理？':''}},{answers:{'图表怎么处理？':'只用表格'},afkTimeoutMs:1000},{answers:[{question:'图表怎么处理？',selected:['只用表格']}],declined:true},{answers:{'其他问题':'只用表格'}},{isError:true,answers:{'图表怎么处理？':'只用表格'}}])await hook('claude',{...event,tool_response:response});
+  await hook('claude',{...event,tool_name:'Read',tool_response:{answers:{'图表怎么处理？':'只用表格'}}});
+  assert.equal(Object.keys((await library.read()).sources).length,0);
+  const output=await hook('claude',{...event,tool_use_id:'actual',tool_response:{content:[{type:'text',text:JSON.stringify({answers:{'图表怎么处理？':'只用表格'}})}]}});
+  const sources=Object.values((await library.read()).sources);
+  assert.equal(sources.length,1);assert.equal(sources[0].text,'只用表格');assert.equal(sources[0].role,'user');
+  assert.match(output.hookSpecificOutput.additionalContext,new RegExp(sources[0].id.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
+  // 同一工具调用重复回调不重复登记。
+  assert.deepEqual(await hook('claude',{...event,tool_use_id:'actual',tool_response:{answers:{'图表怎么处理？':'只用表格'}}}),{});
 });
 
-test('非文档的恢复提交结清租约与票据，不再重复提示',async t=>{
- const root=await mkdtemp(join(tmpdir(),'doc-hooks-'));t.after(()=>rm(root,{recursive:true,force:true}));
- const library=await Library.open(root);
- const event=(session,name,rest={})=>({session_id:session,hook_event_name:name,cwd:`workspace-${session}`,...rest});
- const oldKey=sessionKey('codex','old'),newKey=sessionKey('claude','new');
- await handleHook(library,'codex',event('old','UserPromptSubmit',{prompt:'这份报告不要图注'}));
- const old=(await library.read()).sessions[oldKey].current;
- await handleHook(library,'codex',event('old','PostToolUse',{tool_response:{document_learning_signal:{session:oldKey,turn:old.id,token:old.token,phase:'begin',document:true,context:{task:'old-report',kind:'experiment-report'}}}}));
- await handleHook(library,'codex',event('old','Interrupt'));
- await handleHook(library,'claude',event('new','UserPromptSubmit',{prompt:'整理一份新报告'}));
- const fresh=(await library.read()).sessions[newKey].current;
- await handleHook(library,'claude',event('new','PostToolUse',{tool_response:{document_learning_signal:{session:newKey,turn:fresh.id,token:fresh.token,phase:'begin',document:true,context:{task:'new-report',kind:'report'}}}}));
- const owner=(await library.read()).sessions[newKey].current;
- const [input]=recoveryInput(await library.read(),newKey,owner.id,owner.token);
- assert.equal(typeof input?.recoveryTicket,'string');
- await handleHook(library,'claude',event('new','PostToolUse',{tool_response:{document_learning_signal:{...input,phase:'begin',document:false}}}));
- const state=await library.read(),settled=state.sessions[oldKey].current;
- assert.equal(settled.receipt,'not-document');
- assert.equal(settled.recoveryLease,undefined);
- assert.deepEqual(state.sessions[newKey].current.recoveryTickets,[]);
- assert.deepEqual(recoveryInput(state,newKey,owner.id,owner.token),[]);
-});
-
-test('计划模式判定归一化，不依赖精确拼写',async t=>{
- assert.equal(isPlanMode(' plan '),true);assert.equal(isPlanMode('PLAN'),true);
- assert.equal(isPlanMode('plan-mode'),true);assert.equal(isPlanMode('plan_mode'),true);
- assert.equal(isPlanMode('default'),false);assert.equal(isPlanMode(undefined),false);
- assert.equal(isPlanMode('planning'),false);assert.equal(isPlanMode('readonly'),false);
- for(const mode of ['PLAN','Plan','plan-mode']){
-  const {library,key,submit}=await setup(t);
-  await submit({phase:'begin',document:true,context:{task:'a',kind:'report',mode}});
-  const source=(await library.read()).sessions[key].current.source;
-  await submit({phase:'complete',skillDecision:{action:'create',reason:'计划期候选不发布'},skills:[{name:`draft-${mode}`,description:'计划期候选',body:'保留为计划，尚未实施。',scope:{kind:'report'},evidence:[{source,quote:'本次不要图注'}],positive:[{kind:'report'}],negative:[{kind:'instruction'}]}]});
+test('宿主后台调用不建立会话、不注入指导、不触发整理',async t=>{
+  const {library,hook,triggers}=await setup(t);
+  const background={session_id:'bg',cwd:'D:/work',turn_id:'bg-turn',transcript_path:null};
+  assert.deepEqual(await hook('codex',{...background,hook_event_name:'SessionStart',source:'startup'}),{});
+  assert.deepEqual(await hook('codex',{...background,hook_event_name:'UserPromptSubmit',prompt:'建议下一次编辑'}),{});
+  assert.deepEqual(await hook('codex',{...background,hook_event_name:'SessionEnd'}),{});
   const state=await library.read();
-  assert.equal(state.sessions[key].current.publication,'deferred-plan-mode',mode);
-  assert.equal(Object.keys(state.skills).length,0,mode);
-  assert.equal(state.sessions[key].current.context.mode,mode);
- }
+  assert.deepEqual(state.sessions,{});assert.deepEqual(state.sources,{});assert.equal(state.background.count,1);assert.deepEqual(triggers,[]);
 });
 
-test('宿主后台调用不建立会话、不建轮、不注入指导',async t=>{
- const root=await mkdtemp(join(tmpdir(),'doc-hooks-'));t.after(()=>rm(root,{recursive:true,force:true}));
- const library=await Library.open(root);
- const background={session_id:'bg',cwd:'D:/work',turn_id:'bg-turn',transcript_path:null};
- assert.deepEqual(await handleHook(library,'codex',{...background,hook_event_name:'SessionStart',source:'startup'}),{});
- assert.deepEqual(await handleHook(library,'codex',{...background,hook_event_name:'UserPromptSubmit',prompt:'建议下一次编辑'}),{});
- assert.deepEqual(await handleHook(library,'codex',{...background,hook_event_name:'Stop'}),{});
- const state=await library.read();
- assert.deepEqual(state.sessions,{});
- assert.deepEqual(state.sources,{});
- assert.deepEqual(state.background,{count:1,lastAt:state.background.lastAt,lastAgent:'codex'});
- assert.equal(typeof state.background.lastAt,'string');
+test('transcript_path 字段缺失时按普通会话处理',async t=>{
+  const {library,hook}=await setup(t);
+  const result=await hook('codex',{...base,session_id:'legacy',hook_event_name:'UserPromptSubmit',prompt:'本次不要图注'});
+  assert.equal(typeof result.hookSpecificOutput.additionalContext,'string');
+  assert.equal((await library.read()).sessions[sessionKey('codex','legacy')].current.id,'one');
 });
 
-test('transcript_path 字段缺失时按普通会话处理，不误伤旧宿主',async t=>{
- const root=await mkdtemp(join(tmpdir(),'doc-hooks-'));t.after(()=>rm(root,{recursive:true,force:true}));
- const library=await Library.open(root);
- const base={session_id:'legacy',cwd:'D:/work',turn_id:'one'};
- await handleHook(library,'codex',{...base,hook_event_name:'SessionStart',source:'startup'});
- const result=await handleHook(library,'codex',{...base,hook_event_name:'UserPromptSubmit',prompt:'本次不要图注'});
- const key=sessionKey('codex','legacy'),state=await library.read();
- assert.equal(typeof result.hookSpecificOutput.additionalContext,'string');
- assert.equal(state.sessions[key].current.id,'one');
- assert.equal(state.background,undefined);
+test('会话状态按容量修剪，保留当前会话',async t=>{
+  const {library,hook}=await setup(t);
+  await library.transact('seed-sessions',state=>{for(let i=0;i<SESSION_LIMIT+5;i++)state.sessions[`codex-seed-${i}`]={agent:'codex',id:`seed-${i}`,lastSeen:`2026-01-${String(i+1).padStart(2,'0')}T00:00:00.000Z`};});
+  await hook('codex',{session_id:'fresh',hook_event_name:'UserPromptSubmit',prompt:'新需求',cwd:'D:/work'});
+  const keys=Object.keys((await library.read()).sessions);
+  assert.equal(keys.length,SESSION_LIMIT);assert.ok(keys.includes(sessionKey('codex','fresh')));
+  for(let i=0;i<6;i++)assert.equal(keys.includes(`codex-seed-${i}`),false);
 });
 
-test('有 rollout 路径的真实会话行为不变',async t=>{
- const root=await mkdtemp(join(tmpdir(),'doc-hooks-'));t.after(()=>rm(root,{recursive:true,force:true}));
- const library=await Library.open(root);
- const base={session_id:'real',cwd:'D:/work',turn_id:'one',transcript_path:'C:/Users/me/.codex/sessions/rollout.jsonl'};
- await handleHook(library,'codex',{...base,hook_event_name:'SessionStart',source:'startup'});
- const result=await handleHook(library,'codex',{...base,hook_event_name:'UserPromptSubmit',prompt:'整理实验报告'});
- const key=sessionKey('codex','real'),turn=(await library.read()).sessions[key].current;
- assert.match(result.hookSpecificOutput.additionalContext,new RegExp(turn.id.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
- assert.equal(turn.receipt,'pending');
-});
-
-test('会话状态按容量修剪，恢复相关会话不被淘汰',async t=>{
- const root=await mkdtemp(join(tmpdir(),'doc-hooks-'));t.after(()=>rm(root,{recursive:true,force:true}));
- const library=await Library.open(root);
- const seed=id=>({id,receipt:'complete',at:'2026-01-01T00:00:00.000Z'});
- const overflow=7;
- await library.transact('seed-sessions',state=>{
-  for(let i=0;i<SESSION_LIMIT+overflow;i++)state.sessions[`codex-seed-${i}`]={agent:'codex',id:`seed-${i}`,lastStart:`2026-01-${String(i+1).padStart(2,'0')}T00:00:00.000Z`,current:seed(`t-${i}`)};
-  state.sessions['codex-owner']={agent:'codex',id:'owner',lastStart:'2025-12-01T00:00:00.000Z',current:seed('t-owner'),recoveryTickets:[{id:'ticket',session:'codex-open',turn:'t-open',expires:Date.now()+600000}]};
-  state.sessions['codex-open']={agent:'codex',id:'open',lastStart:'2025-11-01T00:00:00.000Z',current:{id:'t-open',receipt:'pending'}};
-  state.sessions['codex-leased']={agent:'codex',id:'leased',lastStart:'2025-10-01T00:00:00.000Z',current:{...seed('t-leased'),recoveryLease:{ownerKey:'codex-owner',ownerTurn:'t-owner',ticket:'ticket',expires:Date.now()+600000}}};
- });
- await handleHook(library,'codex',{session_id:'fresh',hook_event_name:'UserPromptSubmit',prompt:'新需求',cwd:'D:/work',transcript_path:'C:/rollout.jsonl'});
- const keys=Object.keys((await library.read()).sessions);
- assert.equal(keys.length,SESSION_LIMIT);
- for(const key of ['codex-owner','codex-open','codex-leased',sessionKey('codex','fresh')])assert.ok(keys.includes(key),key);
- // 受保护的四个会话不参与淘汰，因此需要多淘汰四个最旧的可淘汰会话
- const evicted=overflow+4;
- for(let i=0;i<evicted;i++)assert.equal(keys.includes(`codex-seed-${i}`),false,`seed-${i}`);
- assert.ok(keys.includes(`codex-seed-${evicted}`));
-});
-
-test('存活会话只保留未终结的 pending 轮，终结轮不再堆积',async t=>{
- const root=await mkdtemp(join(tmpdir(),'doc-hooks-'));t.after(()=>rm(root,{recursive:true,force:true}));
- const library=await Library.open(root);
- await library.transact('seed-pending',state=>{
-  state.sessions['codex-mixed']={agent:'codex',id:'mixed',lastStart:'2026-01-01T00:00:00.000Z',current:{id:'t-done',receipt:'complete'},pending:[{id:'t-old',receipt:'complete'},{id:'t-open',receipt:'pending-recovery',document:true}]};
- });
- await handleHook(library,'codex',{session_id:'fresh',hook_event_name:'UserPromptSubmit',prompt:'新需求',cwd:'D:/work',transcript_path:'C:/rollout.jsonl'});
- const pending=(await library.read()).sessions['codex-mixed'].pending;
- assert.deepEqual(pending.map(t=>t.id),['t-open']);
-});
-
-test('首轮 Stop 不提前标记待恢复，避免活跃轮被其他会话认领',async t=>{
- const root=await mkdtemp(join(tmpdir(),'doc-hooks-'));t.after(()=>rm(root,{recursive:true,force:true}));
- const library=await Library.open(root);
- const event=(session,name,rest={})=>({session_id:session,hook_event_name:name,cwd:`workspace-${session}`,...rest});
- const begin=async(session,agent,turn,task)=>handleHook(library,agent,event(session,'PostToolUse',{tool_response:{document_learning_signal:{session:sessionKey(agent,session),turn:turn.id,token:turn.token,phase:'begin',document:true,context:{task,kind:'report'}}}}));
- const activeKey=sessionKey('codex','active'),otherKey=sessionKey('claude','other');
- await handleHook(library,'codex',event('active','UserPromptSubmit',{prompt:'写一份报告'}));
- const active=(await library.read()).sessions[activeKey].current;
- await begin('active','codex',active,'active-report');
- const first=await handleHook(library,'codex',event('active','Stop'));
- assert.equal(first.decision,'block');
- assert.equal((await library.read()).sessions[activeKey].current.receipt,'in-progress');
- await handleHook(library,'claude',event('other','UserPromptSubmit',{prompt:'整理另一份报告'}));
- const other=(await library.read()).sessions[otherKey].current;
- await begin('other','claude',other,'other-report');
- assert.deepEqual(recoveryInput(await library.read(),otherKey,other.id,other.token),[]);
- await handleHook(library,'claude',event('other','PostToolUse',{tool_response:{document_learning_signal:{session:otherKey,turn:other.id,token:other.token,phase:'complete',rules:[],skills:[],skillDecision:{action:'no-change',reason:'测试中暂无新经验'}}}}));
- await handleHook(library,'codex',event('active','SessionEnd'));
- await handleHook(library,'claude',event('other','UserPromptSubmit',{prompt:'再整理一份报告'}));
- const next=(await library.read()).sessions[otherKey].current;
- await begin('other','claude',next,'next-report');
- const [claimed]=recoveryInput(await library.read(),otherKey,next.id,next.token);
- assert.equal(claimed.session,activeKey);
+test('Codex request_user_input 的答案按问题 id 对回问题，user_note 去掉前缀',async t=>{
+  const {library,hook}=await setup(t);
+  await hook('codex',{...base,hook_event_name:'UserPromptSubmit',prompt:'整理报告'});
+  const questions=[{header:'晋升',id:'promote_core',question:'是否晋升为通用经验？',options:[{label:'晋升',description:'所有文档适用'},{label:'不晋升',description:'保持原范围'}]}];
+  const output=await hook('codex',{...base,hook_event_name:'PostToolUse',tool_name:'request_user_input',tool_use_id:'call_1',tool_input:JSON.stringify({questions}),tool_response:JSON.stringify({answers:{promote_core:{answers:['晋升','user_note: 报告和说明书都适用']}}})});
+  const [source]=Object.values((await library.read()).sources);
+  assert.equal(source.question,'是否晋升为通用经验？');assert.equal(source.text,'晋升\n报告和说明书都适用');assert.equal(source.origin,'user-question');
+  assert.match(output.hookSpecificOutput.additionalContext,/已登记用户回答/);
+  // 未知 id 与空答案不登记。
+  await hook('codex',{...base,hook_event_name:'PostToolUse',tool_name:'request_user_input_async',tool_use_id:'call_2',tool_input:{questions},tool_response:{answers:{other:{answers:['晋升']},promote_core:{answers:[]}}}});
+  assert.equal(Object.keys((await library.read()).sources).length,1);
 });

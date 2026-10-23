@@ -23,6 +23,8 @@ test('自动生成的技能自包含，非 PCB 对象仍匹配同一工艺',asyn
   assert.equal(result[0].status,'published');
   const body=await readFile(result[0].path,'utf8');
   assert.match(body,/本次资料/);
+  assert.match(body,/先读个人经验手册 `knowledge\/core\.md`/);
+  assert.doesNotMatch(await readFile(join(library.root,'skills','bag-ultrasonic-instructions','README.md'),'utf8'),/先读个人经验手册/);
   assert.match(await readFile(join(library.root,'skills','bag-ultrasonic-instructions','agents','openai.yaml'),'utf8'),/allow_implicit_invocation: true/);
   assert.match(await readFile(join(library.root,'skills','bag-ultrasonic-instructions','README.md'),'utf8'),/<!-- document-learning:readme -->/);
 });

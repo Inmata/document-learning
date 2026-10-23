@@ -29,7 +29,7 @@ export function inside(root, candidate) {
   if (rel === '..' || rel.startsWith(`..\\`) || rel.startsWith('../') || isAbsolute(rel)) throw new Error('路径超出允许的根目录');
   return path;
 }
-export async function withLock(root, fn, timeout = 10000) {
+export async function withLock(root, fn, timeout = 10000, { staleAfter } = {}) {
   await mkdir(root, { recursive: true });
   const path = resolve(root, '.write-lock');
   const owner = { pid: process.pid, id: randomUUID(), created: Date.now() };
@@ -45,7 +45,9 @@ export async function withLock(root, fn, timeout = 10000) {
         const old = await readJson(path);
         let alive = true;
         try { process.kill(old.pid, 0); } catch (e) { alive = e.code !== 'ESRCH'; }
-        if (!alive && (await readJson(path)).id === old.id) { await unlink(path); continue; }
+        // 持有者已退出，或超过 staleAfter（进程号可能已被复用）时视为残留锁。
+        const expired = staleAfter && Date.now() - (old.created || 0) > staleAfter;
+        if ((!alive || expired) && (await readJson(path)).id === old.id) { await unlink(path); continue; }
       } catch (e) { if (e.code === 'ENOENT') continue; if (!(e instanceof SyntaxError)) throw e; }
       if (Date.now() - start > timeout) throw new Error(`个人库正被其他进程使用：${path}`);
       await delay(25);

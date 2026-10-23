@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { atomicWrite, fingerprint, inside, hash, withLock, writeJson, readJson, exists } from './io.mjs';
 import { verifyEvidence, normalizeScope, scopeMatch } from './knowledge.mjs';
 import {prepareCommit,commitPublished} from './versioning.mjs';
+import {safeName} from './catalog.mjs';
 
 const start = '<!-- document-learning:start -->';
 const end = '<!-- document-learning:end -->';
@@ -16,7 +17,7 @@ export function renderSkillReadme({ name, title, description, scope, positive = 
   const invokeNote = implicit
     ? `满足适用条件时可由文档学习自动匹配，也可通过 \`$${name}\` 明确调用。`
     : `本技能仅在用户明确指定使用时启动，例如 \`$${name} 整理当前目录资料\`。`;
-  const cleanBody = body.replace(start, '').replace(end, '').replace(/^## 持续学习的适用经验\s+当前明确需求优先于下列历史经验。保留各条的适用范围。\s*/m, '').trim();
+  const cleanBody = body.replace(start, '').replace(end, '').replace(/^## 持续学习的适用经验\s+当前明确需求优先于下列历史经验。保留各条的适用范围。\s*(?:制作前先读个人经验手册[^\n]*\n)?\s*/m, '').trim();
   return `${readmeMarker}
 # ${display}
 
@@ -103,7 +104,10 @@ export async function publishSkills(library, proposals, { skillDirectory } = {})
       if (old.includes(start) !== old.includes(end) || old.split(start).length > 2 || old.split(end).length > 2) throw new Error('技能管理区标记损坏');
       const rules = (p.ruleIds || []).map(id => state.rules.find(r => r.id === id));
       const shared = rules.map(r => `- ${r.text}（适用条件：${JSON.stringify(r.scope)}；${r.strength}）`).join('\n');
-      const body = `${start}\n## 持续学习的适用经验\n\n当前明确需求优先于下列历史经验。保留各条的适用范围。\n\n${p.body.trim()}${shared ? `\n\n${shared}` : ''}\n${end}`;
+      // 跨文档经验集中在手册里维护，技能只留一行指向对应类型的手册，避免两处内容漂移。
+      const kind = [p.scope?.kind ?? []].flat()[0];
+      const pointer = `制作前先读个人经验手册 \`knowledge/core.md\`${kind ? ` 和 \`knowledge/${safeName(kind)}.md\`` : ''}（位于个人技能仓库或个人库）。`;
+      const body = `${start}\n## 持续学习的适用经验\n\n当前明确需求优先于下列历史经验。保留各条的适用范围。\n\n${pointer}\n\n${p.body.trim()}${shared ? `\n\n${shared}` : ''}\n${end}`;
       let next;
       if (old) {
         if (old.includes(start)) next = old.slice(0,old.indexOf(start)) + body + old.slice(old.indexOf(end)+end.length);

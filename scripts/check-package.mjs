@@ -13,7 +13,8 @@ for(const manifest of manifests){assert.equal(manifest.name,pkg.name);assert.equ
 assert.equal(manifests[0].extensions['com.openai'].hooks,manifests[1].hooks);
 for(const path of [manifests[1].hooks,'./hooks/hooks.json']) {
   const config=await readJson(inside(root,path));
-  for(const required of ['SessionStart','UserPromptSubmit','PostToolUse','Stop','SessionEnd'])assert.ok(config.hooks[required]?.length,`${path} 缺少 ${required}`);
+  for(const required of ['SessionStart','UserPromptSubmit','PostToolUse','SessionEnd'])assert.ok(config.hooks[required]?.length,`${path} 缺少 ${required}`);
+  for(const retired of ['Stop','PermissionDenied','StopFailure'])assert.ok(!config.hooks[retired],`${path} 仍注册已退役的 ${retired}`);
   for(const groups of Object.values(config.hooks))for(const group of groups)for(const hook of group.hooks){assert.equal(hook.type,'command');assert.ok(hook.timeout>0 && hook.timeout<=30);}
 }
 const skill=await readFile(join(root,'skills','document-learning','SKILL.md'),'utf8');
