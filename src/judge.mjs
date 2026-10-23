@@ -17,8 +17,10 @@ const excerpt=(session,limit=3000)=>{
 // 失败信息只保留代码和固定说明，不转出响应正文。
 const failure=result=>({available:false,code:result.code || 'request_failed',message:String(result.message || '').slice(0,200)});
 
-export function createJudge({provider='jev',documentThreshold=0.85,transport,env,model='jev-latest',timeout=60000}={}) {
+export function createJudge({provider='jev',documentThreshold=0.85,transport,env,model='jev-latest',baseUrl=null,apiKey=null,timeout=60000}={}) {
  if(provider==='none')return {available:false,identity:'none',reason:'judge.provider=none'};
+ // 配置了网关时只给 Jev 包传这几个变量，不改动整理进程的环境。
+ if(baseUrl&&!transport)env={...(env || process.env),JEV_PROVIDER:'typesafe',TYPESAFE_BASE_URL:baseUrl.replace(/\/v1\/?$/,''),TYPESAFE_API_KEY:apiKey || (env || process.env).TYPESAFE_API_KEY || ''};
  const call=async(state,questions)=>{
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeout);
   try {
@@ -28,7 +30,7 @@ export function createJudge({provider='jev',documentThreshold=0.85,transport,env
   }catch(error){return {ok:false,code:'request_failed',message:error.name==='AbortError'?'Jev 请求超时':'Jev 调用异常'};}
   finally{clearTimeout(timer);}
  };
- const judge={available:true,identity:`jev:${model}`};
+ const judge={available:true,identity:`jev:${model}${baseUrl?'@gateway':''}`};
  // 每个会话一题：是否为实际制作、修改或审阅文档的任务，以及文档类型。
  judge.classify=async sessions=>{
   if(!sessions.length)return {available:true,results:{}};

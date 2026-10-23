@@ -294,3 +294,18 @@ test('手册：案例经验全部被替代后覆盖旧案例文件',()=>{
  const text=buildManuals(state).files['cases/r1.md'];
  assert.match(text,/已全部晋升或被替代/);assert.doesNotMatch(text,/旧经验/);
 });
+
+test('Jev 配置网关时只把 TypeSafe 变量交给 Jev 包，去掉末尾 /v1',async()=>{
+ assert.deepEqual(validateConfig({judge:{baseUrl:'http://127.0.0.1:3425/v1',apiKey:'magpie'}}).judge.model,'jev-latest');
+ assert.throws(()=>validateConfig({judge:{baseUrl:'ftp://x'}}),/judge\.baseUrl/);
+ const seen=[];
+ const original=globalThis.fetch;
+ globalThis.fetch=async(url,init)=>{seen.push({url,auth:init.headers.Authorization});return new Response(JSON.stringify({answers:{s0_doc:{type:'choice',choice:'document',probabilities:{document:1,not_document:0},confidence:1},s0_kind:{type:'choice',choice:'instruction',probabilities:Object.fromEntries(['experiment-report','instruction','site-report','presentation','markdown','other-document'].map(k=>[k,k==='instruction'?1:0])),confidence:1}},usage:{input_tokens:1,output_tokens:1},model:'jev-x'}),{status:200,headers:{'content-type':'application/json'}});};
+ try {
+  const judge=createJudge({baseUrl:'http://127.0.0.1:3425/v1',apiKey:'magpie',env:{}});
+  assert.equal(judge.identity,'jev:jev-latest@gateway');
+  const result=await judge.classify([{id:'a',messages:[{role:'user',text:'改说明书'}]}]);
+  assert.equal(result.available,true);assert.equal(result.results.a.decision,'document');
+  assert.deepEqual(seen,[{url:'http://127.0.0.1:3425/v1/systemone',auth:'Bearer magpie'}]);
+ } finally {globalThis.fetch=original;}
+});

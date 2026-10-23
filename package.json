@@ -1,6 +1,6 @@
 {
   "name": "document-learning",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "面向 Codex 和 Claude Code 的本地文档持续学习插件",
   "type": "module",
   "private": true,

@@ -158,7 +158,9 @@ export async function doctor({base=dataRoot()}={}) {
         const eventKey=event.replace(/([a-z0-9])([A-Z])/g,'$1_$2').toLowerCase(),id=`${record.path}:${eventKey}:${groupIndex}:${handlerIndex}`;
         if(!settings.includes(`[hooks.state.'${id}']`)&&!settings.includes(`[hooks.state.${JSON.stringify(id)}]`))missing.push(event);
       }
-      hookTrust={status:missing.length?'needs-review':'record-present-unverified',missing,nextStep:'在原生 Codex 中输入 /hooks，审核并信任文档学习条目；程序不修改信任。'};
+      // 信任记录齐全且已观察到真实回调，才算已激活；只有记录时哈希是否通过由 Codex 决定。
+      const observed=active.some(s=>!!s.lastStart);
+      hookTrust={status:missing.length?'needs-review':observed?'active':'record-present-unverified',missing,...(missing.length || !observed?{nextStep:'在原生 Codex 中输入 /hooks，审核并信任文档学习条目；程序不修改信任。'}:{})};
     }
     let rememberPermission;
     if(agent==='claude') {

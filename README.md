@@ -17,7 +17,7 @@
 | 5. Codex default 模式允许提问 | 在 `~/.codex/config.toml` 的 `[features]` 加 `default_mode_request_user_input = true` | 使用 Codex default 模式时必需（晋升确认要靠提问） |
 | 6. Claude 自动模式放行 | `node bin/document-learning.mjs install --agent claude --allow-claude-signal` | 使用 Claude 自动模式时建议 |
 | 7. 整理模型与网关 | 编辑数据目录下的 `config.json`：`consolidate.model`、`effort`、`baseUrl`、`apiKey` | 可选，默认跟随 Claude Code 设置 |
-| 8. Jev 判断层凭据 | 设置环境变量 `TYPESAFE_API_KEY` 或 `OPENROUTER_API_KEY` | 可选，没有时由整理模型独立判断 |
+| 8. Jev 判断层凭据 | 设置环境变量 `TYPESAFE_API_KEY` 或 `OPENROUTER_API_KEY`，或在配置中填 `judge.baseUrl` 指向本机网关 | 可选，没有时由整理模型独立判断 |
 | 9. 整理历史会话 | 先备份数据目录的 `state.json`，再运行 `consolidate --all-existing` | 可选，首次扫描默认只排队最近 7 天 |
 
 完成后新开一个会话，`doctor` 显示 `ready` 即可。有待确认的晋升提案时，模型会在会话开始后用提问工具征求同意，回答即可。
@@ -116,10 +116,12 @@ node bin/document-learning.mjs uninstall
 | `sources.excludePaths` | `*codeg-acp*`、`*workflow*`、`*\Temp\*` | 按完整路径或工作目录排除的通配模式 |
 | `judge.provider` | `jev` | `jev` 先用 Jev 筛掉明显不是文档的会话并合并同义经验；`none` 全部交给整理模型 |
 | `judge.documentThreshold` | 0.85 | Jev 自动判定所需的最低概率 |
+| `judge.model` | `jev-latest` | Jev 模型；`jev-latest` 是稳定别名，`jev-preview` 为预览版 |
+| `judge.baseUrl` / `judge.apiKey` | null | 兼容 System One 接口的网关（如本机 magpie `http://127.0.0.1:3425`，key `magpie`）；null 时直连 TypeSafe 并读环境变量。apiKey 明文保存，只适合本机网关的占位值 |
 | `manual.maxChars` | 3000 | 单个手册的最大字数，超出按排序截断并注明省略条数 |
 | `promotion.minDocsForType` / `minDocsForCore` | 2 / 3 | 晋升到文档类型层 / 核心层所需的最少文档数 |
 
-Jev 的凭据只从环境变量读取（`TYPESAFE_API_KEY`、`OPENROUTER_API_KEY` 等，见该包文档），插件不保存、不输出。没有凭据或调用失败时自动回退为整理模型独立判断，并在整理报告中注明。
+Jev 的凭据默认只从环境变量读取（`TYPESAFE_API_KEY`、`OPENROUTER_API_KEY` 等，见该包文档），插件不输出；配置了 `judge.baseUrl` 时改走该网关，只对 Jev 调用设置 `TYPESAFE_BASE_URL` 和 `TYPESAFE_API_KEY`。没有凭据或调用失败时自动回退为整理模型独立判断，并在整理报告中注明。
 
 ## 实际工作过程
 

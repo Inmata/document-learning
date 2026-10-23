@@ -25,6 +25,13 @@ test('安装重复执行不叠加 hooks，卸载保留原有 hooks、设置与�
   }
   const health=await doctor({base});assert.equal(health.agents.every(a=>a.configured&&!a.callbackObserved),true);
   assert.equal(health.status,'awaiting-hook-trust');assert.equal(health.agents.find(a=>a.agent==='codex').hookTrust.status,'needs-review');
+  // 用户在 /hooks 信任后有记录但未见回调仍是未核实；真实 SessionStart 之后报告已激活。
+  const hooksPath=join(userHome,'.codex','hooks.json'),codexHooks=await readJson(hooksPath),records=[];
+  for(const [event,groups] of Object.entries(codexHooks.hooks))for(const [g,group] of groups.entries())for(const [h,handler] of group.hooks.entries())if(!['pebrel --hooks=full','other-hook'].includes(handler.command))records.push(`[hooks.state.${JSON.stringify(`${hooksPath}:${event.replace(/([a-z0-9])([A-Z])/g,'$1_$2').toLowerCase()}:${g}:${h}`)}]\ntrusted_hash = "x"\n`);
+  await writeFile(join(userHome,'.codex','config.toml'),records.join('\n'));
+  assert.equal((await doctor({base})).agents.find(a=>a.agent==='codex').hookTrust.status,'record-present-unverified');
+  await (await resolveLibrary({base})).transact('seen',state=>{state.sessions['codex:s1']={agent:'codex',lastStart:new Date().toISOString()};});
+  const trusted=(await doctor({base})).agents.find(a=>a.agent==='codex');assert.equal(trusted.hookTrust.status,'active');assert.equal(trusted.hookTrust.nextStep,undefined);
   await uninstall({base});assert.deepEqual(await readJson(join(userHome,'.claude','settings.json')),old);
   assert.equal((await resolveLibrary({base,create:false})).root,join(base,'library'));
 });
