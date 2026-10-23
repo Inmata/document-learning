@@ -180,13 +180,17 @@ async function consolidate(library,{config,learner,judge,mode,userHome,now,progr
  return summary;
 }
 
-// 三次修复仍不通过：记录失败并按次数退避（1、2、4… 天），其他会话照常整理。
+// 三次修复仍不通过：首次失败推迟一天重试，再次失败就放弃这些会话（移出收件箱，有新消息时才重新排队），其他会话照常整理。
 async function failBatch(library,{id,root,batch,unreadable,error,now,judgeStatus}) {
+ let abandoned=0;
  await library.transact('consolidate-failed',draft=>{
-  for(const s of batch){const e=draft.inbox[s.key];if(!e)continue;e.failures=(e.failures || 0)+1;e.retryAfter=new Date(now+2**(e.failures-1)*864e5).toISOString();e.lastError=error.message.slice(0,300);}
+  for(const s of batch){const e=draft.inbox[s.key];if(!e)continue;e.failures=(e.failures || 0)+1;e.lastError=error.message.slice(0,300);
+   if(e.failures<2){e.retryAfter=new Date(now+864e5).toISOString();continue;}
+   const t=draft.transcripts?.[s.key];if(t){t.processedUsers=e.users;t.abandoned={at:new Date(now).toISOString(),run:id,error:e.lastError};}
+   delete draft.inbox[s.key];abandoned++;}
   for(const u of unreadable)delete draft.inbox[u.key];
  });
- const report=`# 经验整理 ${id}\n\n- 整理失败：${error.message.slice(0,300)}\n- 本批 ${batch.length} 个会话已按失败次数推迟重试\n- 判断层：${judgeStatus}\n\n原始输入与每次被拒的模型结果保存在本目录。\n`;
+ const report=`# 经验整理 ${id}\n\n- 整理失败：${error.message.slice(0,300)}\n- 本批 ${batch.length} 个会话：${batch.length-abandoned} 个推迟一天重试，${abandoned} 个已第二次失败并放弃\n- 判断层：${judgeStatus}\n\n原始输入与每次被拒的模型结果保存在本目录。\n`;
  await atomicWrite(join(root,'report.md'),report);
  return {id,report:join(root,'report.md'),processed:0,proposals:0,judge:judgeStatus,error:error.message.slice(0,300)};
 }

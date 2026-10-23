@@ -234,6 +234,11 @@ test('整理三次修复仍失败时推迟这批会话，不再每次重试；�
  const entry=Object.values((await library.read()).inbox)[0];assert.equal(entry.failures,1);assert.ok(entry.retryAfter);
  assert.equal((await runConsolidation(library,{config,learner:bad,judge,userHome,mode:'now'})).status,'empty');assert.equal(calls,3);
  assert.equal(isDue(await library.read(),null,config,Date.now()+12*36e5),false);assert.equal(isDue(await library.read(),{at:new Date(0).toISOString()},config,Date.now()+30*36e5),true);
+ // 第二次失败后放弃：移出收件箱，未变化的会话文件不会重新排队。
+ const second=await runConsolidation(library,{config,learner:bad,judge,userHome,mode:'now',now:Date.now()+25*36e5});
+ assert.equal(second.status,'failed');assert.equal(calls,6);
+ let after=await library.read();assert.deepEqual(after.inbox,{});assert.ok(Object.values(after.transcripts)[0].abandoned);
+ assert.equal((await runConsolidation(library,{config,learner:bad,judge,userHome,mode:'now',now:Date.now()+50*36e5})).status,'empty');assert.equal(calls,6);
  // 进程号被复用的残留锁：超过 staleAfter 后可被接管。
  const lockRoot=join(library.root,'history','consolidations');
  await writeFile(join(lockRoot,'.write-lock'),JSON.stringify({pid:process.pid,id:'stale',created:Date.now()-7*36e5}));

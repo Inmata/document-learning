@@ -4,6 +4,25 @@
 
 ## 安装
 
+### 首次使用清单
+
+以下步骤需要使用者自己执行一次；涉及计划任务和宿主权限的步骤，宿主的自动模式通常不允许模型代为执行。
+
+| 步骤 | 命令或操作 | 是否必需 |
+| --- | --- | --- |
+| 1. 安装依赖 | 在插件目录运行 `npm install` | 必需 |
+| 2. 配置宿主 hooks 与技能入口 | `node bin/document-learning.mjs install`，然后 `doctor` 检查 | 必需 |
+| 3. 创建后台整理计划任务 | `node bin/document-learning.mjs install --schedule` | 必需（否则只在会话开始/结束时检查） |
+| 4. Codex 确认 hook 信任 | 新开 Codex 会话，按提示审核并信任本插件的 hooks | 使用 Codex 时必需 |
+| 5. Codex default 模式允许提问 | 在 `~/.codex/config.toml` 的 `[features]` 加 `default_mode_request_user_input = true` | 使用 Codex default 模式时必需（晋升确认要靠提问） |
+| 6. Claude 自动模式放行 | `node bin/document-learning.mjs install --agent claude --allow-claude-signal` | 使用 Claude 自动模式时建议 |
+| 7. 整理模型与网关 | 编辑数据目录下的 `config.json`：`consolidate.model`、`effort`、`baseUrl`、`apiKey` | 可选，默认跟随 Claude Code 设置 |
+| 8. Jev 判断层凭据 | 设置环境变量 `TYPESAFE_API_KEY` 或 `OPENROUTER_API_KEY` | 可选，没有时由整理模型独立判断 |
+| 9. 整理历史会话 | 先备份数据目录的 `state.json`，再运行 `consolidate --all-existing` | 可选，首次扫描默认只排队最近 7 天 |
+
+完成后新开一个会话，`doctor` 显示 `ready` 即可。有待确认的晋升提案时，模型会在会话开始后用提问工具征求同意，回答即可。
+
+### 详细说明
 需要 Node.js 24 或以上。运行时依赖只有固定版本的 `@jkudish/jev-agent-tools`（Jev 判断层，可在配置中关闭）；首次使用先运行 `npm install`。
 
 在项目目录运行：
@@ -107,7 +126,7 @@ Jev 的凭据只从环境变量读取（`TYPESAFE_API_KEY`、`OPENROUTER_API_KEY
 1. 会话中，hooks 只登记当前请求和问答工具的用户回答（供 `remember` 和晋升确认引用），并提示一行：需要立即记住时运行 `remember`，写文档前读手册。宿主自身的后台模型调用不建立会话。
 2. 后台整理（`consolidate --if-due`）增量扫描宿主会话文件：按文件记录水位，未变化的文件不读取，被截断或重建时从头开始；排除路径和整理器自身的会话不进入收件箱。首次扫描只排队最近 7 天的会话。
 3. 收件箱中待整理会话达到 `minSessions`，或非空且超过 `maxWaitHours` 时才调用模型；否则不产生任何模型请求。整理持有独占锁，已有整理在运行时直接退出。
-4. Jev 先丢弃高置信的非文档会话；其余会话连同全部有效经验交给整理模型（`claude --bare -p`，无工具、无 hooks、无技能）。模型判断文档会话及其 task、kind，逐字引用用户原话提炼经验；与已有经验相同的改为合并证据，同一要求出现在多份文档时提出晋升提案。程序校验引文和范围，不通过时带错误重试最多 3 次；仍失败的这批会话按失败次数推迟 1、2、4… 天再试，其他会话照常整理。新经验至少限定文档或类型，除非用户原话明确说所有文档；所有文档通用的经验通常经晋升产生。
+4. Jev 先丢弃高置信的非文档会话；其余会话连同全部有效经验交给整理模型（`claude --bare -p`，无工具、无 hooks、无技能）。模型判断文档会话及其 task、kind，逐字引用用户原话提炼经验；与已有经验相同的改为合并证据，同一要求出现在多份文档时提出晋升提案。程序校验引文和范围，不通过时带错误重试最多 3 次；仍失败的这批会话推迟一天再试一次，再次失败就放弃（移出待整理队列，会话之后有新消息才重新排队），其他会话照常整理。新经验至少限定文档或类型，除非用户原话明确说所有文档；所有文档通用的经验通常经晋升产生。
 5. 写入后编译手册，并在 `history/consolidations/<运行标识>/` 保存输入、模型结果和 `report.md`。只有被经验引用的用户消息会存入个人库。
 6. 超过 3 天没有整理而仍有待处理会话时，SessionStart 会提示运行 `doctor` 检查计划任务。
 
