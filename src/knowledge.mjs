@@ -133,6 +133,21 @@ export function mergeLearning(state, payload = {}) {
   return changes;
 }
 export const applyLearning = (library, payload) => library.transact('learn', state => mergeLearning(state, payload));
+// 用户手动撤销误收的经验：不需要会话原话，记录原因与时间；已撤销的规则不会被同 key 的新反馈复活。
+export function retireRules(state, ids, reason) {
+  if (!ids.length) throw new Error('retire 需要至少一个 --id 经验标识');
+  if (typeof reason !== 'string' || !reason.trim()) throw new Error('retire 需要 --reason 撤销原因');
+  const at = new Date().toISOString(), changes = [];
+  for (const id of ids) {
+    const rule = state.rules.find(r => r.id === id);
+    if (!rule) throw new Error(`未找到经验：${id}`);
+    if (rule.status === 'retired') { changes.push({ id, action: 'already-retired' }); continue; }
+    if (rule.status !== 'active') throw new Error(`经验 ${id} 当前状态为 ${rule.status}，只能撤销有效经验`);
+    rule.status = 'retired'; rule.retirement = { manual: true, reason: reason.trim(), at };
+    changes.push({ id, action: 'retire' });
+  }
+  return changes;
+}
 
 // 核心层：无条件或只限工作区；文档类型层：不含 task；单份文档层：含 task。
 export function tierOf(scope = {}) {

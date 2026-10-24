@@ -8,7 +8,8 @@ function textOf(content) {
   return content.filter(c=>['text','input_text','output_text'].includes(c.type)).map(c=>c.text || '').join('\n');
 }
 export function isEnvironmentMessage(text) {
-  return /^\s*(?:# AGENTS\.md instructions\s*[\r\n]|<environment_context>|<turn_aborted>|<permissions instructions>|<collaboration_mode>|<skill>)/.test(text);
+  // Codex 注入的标题带目录："# AGENTS.md instructions for <路径>"。
+  return /^\s*(?:# AGENTS\.md instructions\b|<environment_context>|<turn_aborted>|<permissions instructions>|<collaboration_mode>|<skill>|<external_codex_apps_open_page>)/.test(text);
 }
 export function normalizeSession(raw, label='import') {
   const v=raw.structuredContent || raw;
@@ -58,6 +59,7 @@ export function normalizeJsonl(text,label) {
     }
   }
   const session=normalizeSession({id:meta?.id || rows.find(r=>r.sessionId)?.sessionId || label,cwd:meta?.cwd || rows.find(r=>r.cwd)?.cwd,messages},label);
+  if(meta?.source?.subagent)session.subagent=true;
   if(incompleteTail){session.completeness.truncated=true;session.completeness.warnings.push('JSONL 最后一行未完成，保留此前完整消息');}
   return session;
 }

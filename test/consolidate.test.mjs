@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 import {mkdtemp,rm,mkdir,writeFile,appendFile,readFile,utimes} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {Library} from '../src/library.mjs';
+import {Library,syncMemoryFromSkillDirectory} from '../src/library.mjs';
+import {normalizeJsonl} from '../src/history.mjs';
 import {validateConfig} from '../src/config.mjs';
 import {scanTranscripts,applyScan,excluded} from '../src/scan.mjs';
 import {runConsolidation,isDue} from '../src/consolidate.mjs';
 import {isWorkerSession} from '../src/scan.mjs';
 import {createJudge} from '../src/judge.mjs';
-import {addSources,mergeLearning,applyPromotion,validatePromotion} from '../src/knowledge.mjs';
+import {addSources,mergeLearning,applyPromotion,validatePromotion,retireRules} from '../src/knowledge.mjs';
 import {buildManuals} from '../src/catalog.mjs';
 import {remember} from '../src/remember.mjs';
 import {withLock} from '../src/io.mjs';
@@ -308,4 +309,40 @@ test('Jev 配置网关时只把 TypeSafe 变量交给 Jev 包，去掉末尾 /v1
   assert.equal(result.available,true);assert.equal(result.results.a.decision,'document');
   assert.deepEqual(seen,[{url:'http://127.0.0.1:3425/v1/systemone',auth:'Bearer magpie'}]);
  } finally {globalThis.fetch=original;}
+});
+
+test('Codex 子代理会话与带目录的 AGENTS 注入不进入整理',()=>{
+ const meta=source=>JSON.stringify({type:'session_meta',payload:{id:'s',cwd:'D:/docs',source}});
+ const msg=text=>JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text}]}});
+ const guardian=normalizeJsonl([meta({subagent:{other:'guardian'}}),msg('写一份报告')].join('\n'),'g.jsonl');
+ assert.equal(isWorkerSession(guardian),true);
+ const normal=normalizeJsonl([meta('cli'),msg('# AGENTS.md instructions for D:\proj\n\n所有回复用简体中文'),msg('写一份报告')].join('\n'),'n.jsonl');
+ assert.equal(isWorkerSession(normal),false);
+ assert.deepEqual(normal.messages.filter(m=>m.role==='user').map(m=>m.text),['写一份报告']);
+});
+
+test('手动撤销经验：记录原因，已撤销的同 id 经验不被复活，未知 id 报错',async t=>{
+ const {library}=await setup(t);
+ const [id]=await (await library.transact('seed',state=>seedRules(state,['t1']))).result;
+ assert.throws(()=>retireRules({rules:[]},['x'],'误收'),/未找到经验/);
+ assert.throws(()=>retireRules({rules:[]},[id],''),/撤销原因/);
+ const {result}=await library.transact('retire',state=>retireRules(state,[id],'误收的 workflow 协议'));
+ assert.deepEqual(result,[{id,action:'retire'}]);
+ let state=await library.read();const rule=state.rules.find(r=>r.id===id);
+ assert.equal(rule.status,'retired');assert.equal(rule.retirement.reason,'误收的 workflow 协议');
+ assert.ok(state.events.at(-1).rollback);
+ await library.transact('again',s=>seedRules(s,['t1']));
+ assert.equal((await library.read()).rules.find(r=>r.id===id).status,'retired');
+});
+
+test('多端同步：另一台电脑撤销的经验在本机同步撤销',async t=>{
+ const {dir,library}=await setup(t);
+ const [id]=(await library.transact('seed',state=>seedRules(state,['t1']))).result;
+ const skillDir=join(dir,'skills-repo');await mkdir(join(skillDir,'knowledge'),{recursive:true});
+ const remote=structuredClone(await library.read());retireRules(remote,[id],'另一台电脑撤销');
+ await writeFile(join(skillDir,'knowledge','memory.json'),JSON.stringify({schema:1,rules:remote.rules,observations:[],sources:remote.sources,skills:{}}));
+ const local=await Library.open(library.root,{skillDirectory:skillDir});
+ assert.equal(await syncMemoryFromSkillDirectory(local),true);
+ assert.equal((await local.read()).rules.find(r=>r.id===id).status,'retired');
+ assert.equal(await syncMemoryFromSkillDirectory(local),false);
 });

@@ -5,7 +5,7 @@ import {parseArgs} from 'node:util';
 import {resolveLibrary,bindLibrary,dataRoot,readBinding} from '../src/library.mjs';
 import {readJson,writeJson} from '../src/io.mjs';
 import {handleHook} from '../src/hooks.mjs';
-import {applyLearning,retrieve} from '../src/knowledge.mjs';
+import {applyLearning,retrieve,retireRules} from '../src/knowledge.mjs';
 import {importHistory} from '../src/history.mjs';
 import {scanGit} from '../src/git-history.mjs';
 import {runReplay,reconcileReplay} from '../src/replay.mjs';
@@ -20,14 +20,14 @@ import {createJudge} from '../src/judge.mjs';
 import {remember} from '../src/remember.mjs';
 import {applyPromotion} from '../src/knowledge.mjs';
 
-const {values:options,positionals}=parseArgs({allowPositionals:true,options:{home:{type:'string'},library:{type:'string'},repository:{type:'string'},'source-repository':{type:'string'},'skill-directory':{type:'string'},'import-from':{type:'string',multiple:true},bind:{type:'boolean',default:false},repo:{type:'string'},remote:{type:'string'},visibility:{type:'string'},branch:{type:'string'},message:{type:'string'},'no-commit':{type:'boolean',default:false},'replace-history':{type:'string'},decision:{type:'string'},agent:{type:'string'},owner:{type:'string'},input:{type:'string',multiple:true},output:{type:'string'},context:{type:'string'},version:{type:'string'},name:{type:'string'},job:{type:'string'},provider:{type:'string'},expectations:{type:'string'},'replay-only':{type:'boolean',default:false},session:{type:'string'},task:{type:'string'},kind:{type:'string'},merge:{type:'boolean',default:true},'allow-claude-signal':{type:'boolean',default:false},schedule:{type:'boolean',default:false},text:{type:'string'},quote:{type:'string'},source:{type:'string'},category:{type:'string'},strength:{type:'string'},scope:{type:'string'},key:{type:'string'},value:{type:'string'},'scope-basis':{type:'string'},id:{type:'string'},'confirm-source':{type:'string',multiple:true},'confirm-quote':{type:'string'},'if-due':{type:'boolean',default:false},now:{type:'boolean',default:false},'all-existing':{type:'boolean',default:false},help:{type:'boolean',default:false}}});
+const {values:options,positionals}=parseArgs({allowPositionals:true,options:{home:{type:'string'},library:{type:'string'},repository:{type:'string'},'source-repository':{type:'string'},'skill-directory':{type:'string'},'import-from':{type:'string',multiple:true},bind:{type:'boolean',default:false},repo:{type:'string'},remote:{type:'string'},visibility:{type:'string'},branch:{type:'string'},message:{type:'string'},'no-commit':{type:'boolean',default:false},'replace-history':{type:'string'},decision:{type:'string'},agent:{type:'string'},owner:{type:'string'},input:{type:'string',multiple:true},output:{type:'string'},context:{type:'string'},version:{type:'string'},name:{type:'string'},job:{type:'string'},provider:{type:'string'},expectations:{type:'string'},'replay-only':{type:'boolean',default:false},session:{type:'string'},task:{type:'string'},kind:{type:'string'},merge:{type:'boolean',default:true},'allow-claude-signal':{type:'boolean',default:false},schedule:{type:'boolean',default:false},text:{type:'string'},quote:{type:'string'},source:{type:'string'},category:{type:'string'},strength:{type:'string'},scope:{type:'string'},key:{type:'string'},value:{type:'string'},'scope-basis':{type:'string'},id:{type:'string',multiple:true},reason:{type:'string'},'confirm-source':{type:'string',multiple:true},'confirm-quote':{type:'string'},'if-due':{type:'boolean',default:false},now:{type:'boolean',default:false},'all-existing':{type:'boolean',default:false},help:{type:'boolean',default:false}}});
 const command=positionals[0] || 'help';
 const base=options.home || dataRoot();
 async function stdin(){let text='';for await(const chunk of process.stdin){text+=chunk;if(text.length>16*1024*1024)throw new Error('输入超过 16MB');}return text;}
 async function input(){const file=options.input?.[0];return file&&file!=='-'?readJson(file):JSON.parse(await stdin());}
 const print=value=>process.stdout.write(`${JSON.stringify(value,null,2)}\n`);
 async function main(){
-  if(command==='help'||options.help){process.stdout.write(`文档持续学习插件\n\nnode bin/document-learning.mjs <命令> [选项]\n\ninstall [--agent codex|claude|both] [--schedule] [--allow-claude-signal] [--source-repository 只读来源仓库] [--skill-directory 个人技能与长期记忆仓库]\nuninstall [--agent codex|claude]\ndoctor\nbind [--library 个人库] [--source-repository 只读来源仓库] [--skill-directory 个人技能与长期记忆仓库]\ninit-skill-repo --output 新技能仓库目录 [--import-from 现有技能仓库] [--bind]\npublish-repo [--repo 仓库目录] [--remote 远端地址 | --name 仓库名 --owner 账号] [--visibility private|public] [--branch 分支] [--no-commit]\nquery --context 条件JSON文件\nlearn --input 已有原始证据及经验JSON\ncatalog：生成可阅读的经验及案例目录\nsync-skills：连接个人技能入口\nhistory-import --input 会话JSON或JSONL（可重复） [--source-repository 来源仓库] --output 数据集JSON\nbackfill --input 数据集 --decision 当前会话整理的JSON [--job 标识] [--replace-history 旧回放标识]\nbackfill --input 数据集 --provider 已明确选择的后端配置\nreplay --input 数据集JSON [--provider 后端配置JSON] [--job 标识] [--merge]\nreconcile --input 回放任务目录\nrollback --version doctor/events 中的回退版本\nremember --session 会话 --text 经验 --quote 用户原话 [--category method|preference|constraint|fact] [--strength suggestion|default|required] [--scope 范围JSON | --task 文档标识 --kind 类型] [--key 维度 --value 选择] [--source 已登记的用户回答来源]：仅在用户明确要求记住时使用
+  if(command==='help'||options.help){process.stdout.write(`文档持续学习插件\n\nnode bin/document-learning.mjs <命令> [选项]\n\ninstall [--agent codex|claude|both] [--schedule] [--allow-claude-signal] [--source-repository 只读来源仓库] [--skill-directory 个人技能与长期记忆仓库]\nuninstall [--agent codex|claude]\ndoctor\nbind [--library 个人库] [--source-repository 只读来源仓库] [--skill-directory 个人技能与长期记忆仓库]\ninit-skill-repo --output 新技能仓库目录 [--import-from 现有技能仓库] [--bind]\npublish-repo [--repo 仓库目录] [--remote 远端地址 | --name 仓库名 --owner 账号] [--visibility private|public] [--branch 分支] [--no-commit]\nquery --context 条件JSON文件\nlearn --input 已有原始证据及经验JSON\ncatalog：生成可阅读的经验及案例目录\nsync-skills：连接个人技能入口\nhistory-import --input 会话JSON或JSONL（可重复） [--source-repository 来源仓库] --output 数据集JSON\nbackfill --input 数据集 --decision 当前会话整理的JSON [--job 标识] [--replace-history 旧回放标识]\nbackfill --input 数据集 --provider 已明确选择的后端配置\nreplay --input 数据集JSON [--provider 后端配置JSON] [--job 标识] [--merge]\nreconcile --input 回放任务目录\nrollback --version doctor/events 中的回退版本\nretire --id 经验标识（可重复） --reason 撤销原因：撤销误收的经验，保留回退版本\nremember --session 会话 --text 经验 --quote 用户原话 [--category method|preference|constraint|fact] [--strength suggestion|default|required] [--scope 范围JSON | --task 文档标识 --kind 类型] [--key 维度 --value 选择] [--source 已登记的用户回答来源]：仅在用户明确要求记住时使用
 consolidate [--if-due | --now | --all-existing]：扫描宿主会话并批量整理经验；--if-due 未到期时不调用模型
 proposals：列出待确认的晋升提案
 promote --id 提案 --confirm-source 用户回答来源 [--confirm-quote 原文]：用户确认后执行晋升\n\n--repository 是 --source-repository 的旧别名，不作为技能发布目录。\n--skill-directory 可选指定个人文档技能与长期经验 Git 仓库根目录；未指定时默认使用内置 library/skills。\n`);return;}
@@ -61,10 +61,10 @@ promote --id 提案 --confirm-source 用户回答来源 [--confirm-quote 原文]
   }
   // 整理器调用的模型进程会继承 WORKER=1：其中的宿主 hook 直接放行，也不允许再触发整理以外的写入。
   if(command==='hook'&&process.env.DOCUMENT_LEARNING_WORKER==='1'){print({});return;}
-  if(!['hook','query','show-rule','learn','rollback','skill-rollback','replay','reconcile','backfill','catalog','sync-skills','remember','consolidate','proposals','promote'].includes(command))throw new Error(`未知命令：${command}`);
+  if(!['hook','query','show-rule','learn','rollback','retire','skill-rollback','replay','reconcile','backfill','catalog','sync-skills','remember','consolidate','proposals','promote'].includes(command))throw new Error(`未知命令：${command}`);
   const library=await resolveLibrary({base,root:options.library});
   const binding=await readBinding(base) || {};
-  const config=['catalog','remember','promote','consolidate'].includes(command)?await loadConfig(base):null;
+  const config=['catalog','remember','promote','consolidate','retire'].includes(command)?await loadConfig(base):null;
   const catalogOptions={maxChars:config?.manual.maxChars};
   if(command==='catalog'){print(await exportCatalog(library,catalogOptions));return;}
   if(command==='remember'){
@@ -78,7 +78,7 @@ promote --id 提案 --confirm-source 用户回答来源 [--confirm-quote 原文]
   if(command==='promote'){
     if(!options.id||!options['confirm-source']?.length)throw new Error('promote 需要 --id 提案和 --confirm-source 用户确认回答的来源');
     const confirmation=options['confirm-source'].map(source=>({source,...(options['confirm-quote']?{quote:options['confirm-quote']}:{})}));
-    const {result}=await library.transact('promote',state=>applyPromotion(state,options.id,confirmation,config.promotion));
+    const {result}=await library.transact('promote',state=>applyPromotion(state,options.id[0],confirmation,config.promotion));
     print({...result,catalog:await exportCatalog(library,catalogOptions)});return;
   }
   if(command==='consolidate'){
@@ -112,6 +112,11 @@ promote --id 提案 --confirm-source 用户回答来源 [--confirm-quote 原文]
     print({rule,sources:rule.evidence.map(e=>state.sources[e.source])});return;
   }
   if(command==='rollback'){print(await library.rollback(options.version));return;}
+  if(command==='retire'){
+    const {revision,result}=await library.transact('retire',state=>retireRules(state,options.id || [],options.reason));
+    const version=(await library.read()).events.findLast(e=>e.revision===revision)?.rollback || null;
+    print({revision,rollback:version,changes:result,catalog:await exportCatalog(library,catalogOptions)});return;
+  }
   if(command==='skill-rollback'){print(await rollbackSkill(library,options.name,options.version));return;}
   if(command==='replay'){
     const dataset=await input(),config=options.provider?await readJson(options.provider):{type:'claude'};

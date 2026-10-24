@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "document-learning",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "跨工作区复用文档经验，自动维护个人规则与技能，支持历史回放。",
   "extensions": {
     "com.openai": {

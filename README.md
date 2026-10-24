@@ -194,6 +194,14 @@ node bin/document-learning.mjs skill-rollback --name '技能标识' --version '�
 
 经验库回退和技能文件回退分别执行，避免一次操作覆盖无关手动修改。程序不推送远程仓库。
 
+误收的经验用 `retire` 撤销，可一次给多个 `--id`。撤销会记录原因并留下回退版本，同 id 的新反馈不会让它复活；手册随后重新生成。另一台电脑同步手册仓库的 `memory.json` 后，本机仍有效的同 id 经验会跟着撤销：
+
+```powershell
+node bin/document-learning.mjs retire --id '经验ID' --id '另一个经验ID' --reason '撤销原因'
+```
+
+扫描宿主会话时，Codex 子代理会话（自动审批 guardian、派生线程）和 `# AGENTS.md instructions for <目录>` 这类项目说明注入都不当作用户反馈。
+
 个人技能目录自身处于 Git 仓库中时，发布前目标文件干净且索引可写，就只提交本次管理的文件，保留其他已暂存内容。默认使用个人快照和技能备份；不自动初始化 Git、执行仓库 hooks 或推送。
 
 直接打开手册目录的 `knowledge/core.md`、`knowledge/<kind>.md` 和 `knowledge/index.md` 查看有效经验；`cases/` 保存单份文档经验、案例事实与已替代的历史记录；`skills/` 是实际可调用技能。`catalog` 命令可重新生成全部手册。

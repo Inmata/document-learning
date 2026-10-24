@@ -43,7 +43,9 @@ async function readRange(path,start,end) {
 }
 const userLine=/"role"\s*:\s*"user"|"type"\s*:\s*"user_message"/;
 // 后台整理器、补学和回放的请求本身也是会话；即使宿主保存了它们也不再整理。
+// Codex 子代理（自动审批 guardian、派生线程）的"用户消息"是宿主转述的上下文，同样跳过。
 export const isWorkerSession=(session,{libraryRoot}={})=>{
+ if(session.subagent)return true;
  const cwd=session.context?.workspace || '';
  if(libraryRoot&&cwd){const a=resolve(cwd).toLowerCase(),b=resolve(libraryRoot).toLowerCase();if(a===b||a.startsWith(b.endsWith(sep)?b:b+sep))return true;}
  const first=session.messages.find(m=>m.role==='user')?.text || '';

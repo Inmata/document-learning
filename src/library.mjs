@@ -104,6 +104,7 @@ export async function syncMemoryFromSkillDirectory(lib) {
   if (!needsUpdate && memory) {
     if (Object.keys(memory.sources || {}).some(id => !state.sources?.[id])) needsUpdate = true;
     else if ((memory.rules || []).some(r => !state.rules?.some(existing => existing.id === r.id))) needsUpdate = true;
+    else if ((memory.rules || []).some(r => r.status === 'retired' && state.rules?.some(existing => existing.id === r.id && existing.status === 'active'))) needsUpdate = true;
     else if ((memory.observations || []).some(o => !state.observations?.some(existing => existing.id === o.id))) needsUpdate = true;
     else if (Object.keys(memory.skills || {}).some(name => !state.skills?.[name])) needsUpdate = true;
   }
@@ -121,7 +122,12 @@ export async function syncMemoryFromSkillDirectory(lib) {
     }
     if (memory) {
       for (const [id, src] of Object.entries(memory.sources || {})) if (!draft.sources[id]) draft.sources[id] = src;
-      for (const rule of memory.rules || []) if (!draft.rules.some(existing => existing.id === rule.id)) draft.rules.push(rule);
+      for (const rule of memory.rules || []) {
+        const existing = draft.rules.find(r => r.id === rule.id);
+        if (!existing) draft.rules.push(rule);
+        // 另一台电脑撤销的经验在本机同步撤销；撤销只单向传播，不复活本机已撤销的规则。
+        else if (rule.status === 'retired' && existing.status === 'active') { existing.status = 'retired'; existing.retirement = rule.retirement; }
+      }
       for (const obs of memory.observations || []) if (!draft.observations.some(existing => existing.id === obs.id)) draft.observations.push(obs);
       for (const [name, skill] of Object.entries(memory.skills || {})) {
         const info = fileHashes[name];
