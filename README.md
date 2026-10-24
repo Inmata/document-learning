@@ -98,6 +98,47 @@ node bin/document-learning.mjs uninstall
 
 也可以通过宿主原生插件机制安装本项目：根 `plugin.json` 提供 Agent Plugins/OpenAI 格式，另有 Codex 与 Claude Code 兼容清单。原生插件安装与上述用户级 hooks 安装选择一种。Codex 的 hook 信任由宿主处理，安装程序不修改信任记录；Codex 按 `hooks.json` 中分组的位置和内容记录信任，重装时本插件的分组保持原位置，插件路径和 hook 设置不变时无需重新信任；路径或设置变化后需要重新审核。原生插件安装后仍需在宿主中启用并确认 hook 信任。源码 hooks 需要在本机可执行，GitHub 分发不等于进入官方公共插件目录。
 
+### 升级
+
+升级不删除个人库，也不覆盖配置文件。每台电脑各执行一次，先关闭正在运行的 Codex 和 Claude Code 会话。以下命令假设插件在 `D:\git-repo\document-learning`、个人技能仓库在 `D:\git-repo\document-skills`，路径不同时替换成实际目录。
+
+1. 更新代码和依赖，重新安装 hooks（hook 命令和分组可能随版本变化，重新安装才会更新）：
+
+```powershell
+cd D:\git-repo\document-learning
+git pull
+npm install
+node bin/document-learning.mjs install
+```
+
+之前用过 `--schedule` 或 `--allow-claude-signal` 的，在**管理员** PowerShell 中带上同样的选项再运行一次，更新计划任务和放行规则：
+
+```powershell
+cd D:\git-repo\document-learning
+node bin/document-learning.mjs install --schedule --allow-claude-signal
+```
+
+2. 绑定了个人技能仓库时，先拉取其他电脑推送的手册和经验，再重新绑定。绑定会合并 `knowledge/memory.json` 中本机没有的经验，以及其他电脑撤销的经验：
+
+```powershell
+cd D:\git-repo\document-skills
+git pull
+cd D:\git-repo\document-learning
+node bin/document-learning.mjs bind --skill-directory D:\git-repo\document-skills
+```
+
+3. 检查状态，`doctor` 显示 `ready` 即可：
+
+```powershell
+node bin/document-learning.mjs doctor
+```
+
+4. 新开 Codex 会话。提示 hooks 有变化时，审核后重新信任一次。
+
+手册仓库只在本机自动提交、不自动推送。希望另一台电脑拿到本机的新经验或撤销，先在本机的个人技能仓库运行 `git push`，再到另一台电脑执行第 2 步。撤销状态的跨机同步从 0.1.2 开始支持，所以要先完成第 1 步再执行第 2 步。
+
+各版本的变化见 GitHub Releases。
+
 ## 配置文件
 
 位于数据目录下的 `config.json`（Windows 为 `%LOCALAPPDATA%\DocumentLearning\config.json`）。缺少的字段使用默认值，以 `_` 开头的键只是说明；无效值会报错并指出字段，`doctor` 显示生效配置。
