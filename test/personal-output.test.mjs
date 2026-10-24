@@ -54,6 +54,7 @@ test('initSkillRepository 只导入文档技能并排除编程技能与 notes，
 
  const initResult=await initSkillRepository({output:docRepo,base:baseA,bind:true,importFrom:[legacyRepo]});
  assert.deepEqual(initResult.imported,['customer-site-report']);
+ assert.match(await readFile(join(docRepo,'install.cmd'),'utf8'),/^@echo off\r\npwsh\.exe -NoProfile /,'install.cmd 用 PowerShell 7 而不是 5.1');
  assert.equal(await exists(join(docRepo,'efficient-parallel-development')),false);
  assert.equal(await exists(join(docRepo,'notes')),false);
  assert.equal(await exists(join(docRepo,'customer-cleaning-instructions','SKILL.md')),true);
