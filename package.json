@@ -25,6 +25,7 @@
     ".codex-plugin/",
     ".claude-plugin/",
     "README.md",
+    "README.en.md",
     "LICENSE",
     "docs/",
     "examples/",
