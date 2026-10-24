@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | 1. 安装依赖 | 在插件目录运行 `npm install` | 必需 |
 | 2. 配置宿主 hooks 与技能入口 | `node bin/document-learning.mjs install`，然后 `doctor` 检查 | 必需 |
-| 3. 创建后台整理计划任务 | `node bin/document-learning.mjs install --schedule` | 必需（否则只在会话开始/结束时检查） |
+| 3. 创建后台整理计划任务 | Windows 上在**管理员** PowerShell 中运行 `node bin/document-learning.mjs install --schedule` | 必需（否则只在会话开始/结束时检查） |
 | 4. Codex 确认 hook 信任 | 新开 Codex 会话，按提示审核并信任本插件的 hooks | 使用 Codex 时必需 |
 | 5. Codex default 模式允许提问 | 在 `~/.codex/config.toml` 的 `[features]` 加 `default_mode_request_user_input = true` | 使用 Codex default 模式时必需（晋升确认要靠提问） |
 | 6. Claude 自动模式放行 | `node bin/document-learning.mjs install --agent claude --allow-claude-signal` | 使用 Claude 自动模式时建议 |
@@ -40,7 +40,7 @@ node bin/document-learning.mjs doctor
 node bin/document-learning.mjs install --schedule
 ```
 
-Windows 上创建两个计划任务：每 `schedule.intervalMinutes` 分钟一次、登录时一次（`schedule.runAtLogon`），都只运行 `consolidate --if-due` 到期检查；`uninstall` 移除全部宿主后删除它们。其他系统输出 cron 或 launchd 配置，由用户自行添加。修改 `schedule` 后需重新运行 `install --schedule`。另外，每次会话开始和结束时 hooks 也会在后台触发一次到期检查。
+Windows 上创建两个计划任务：每 `schedule.intervalMinutes` 分钟一次、登录时一次（`schedule.runAtLogon`），都只运行 `consolidate --if-due` 到期检查；`uninstall` 移除全部宿主后删除它们。任务通过 `conhost.exe --headless` 启动 node，不弹出终端窗口，也不抢占前台焦点（例如全屏游戏）；早期版本创建的任务会弹窗，重新运行一次 `install --schedule` 即可更新。创建登录时任务需要管理员权限，非管理员终端会报“拒绝访问”，此时间隔任务可能已更新而登录任务仍是旧命令，请在管理员 PowerShell 中重新运行。其他系统输出 cron 或 launchd 配置，由用户自行添加。修改 `schedule` 后需重新运行 `install --schedule`。另外，每次会话开始和结束时 hooks 也会在后台触发一次到期检查。
 
 Claude Code 自动模式会审查模型发出的命令和提问工具调用，用户要求的“记住”、晋升提问与确认都可能被拦截。如希望不被拦截，可显式授权：
 

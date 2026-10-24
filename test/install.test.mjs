@@ -88,6 +88,7 @@ test('安装只注册四个事件，写入默认配置；计划任务需确认�
   assert.equal(second.config.created,false);assert.equal(second.schedule.status,'created');
   assert.equal(calls.length,2);assert.ok(calls[0].includes('MINUTE')&&calls[0].includes('120'));assert.ok(calls[1].includes('ONLOGON'));
   assert.ok(calls[0].at(-1).includes('consolidate --if-due'));
+  assert.ok(calls.every(c=>c.at(-1).startsWith('conhost.exe --headless ')),'计划任务不弹出控制台窗口');
   assert.ok(calls[0].at(-1).includes(`--home "${base}"`),'计划任务带上安装时的数据目录');
   const health=await doctor({base});
   assert.equal(health.consolidation.schedule.name,TASK_NAME);assert.equal(health.consolidation.pendingSessions,0);assert.equal(health.config.effective.manual.maxChars,3000);

@@ -26,8 +26,10 @@ export function scheduleCommands(config,{platform=process.platform,node=process.
   const run=`"${node}" "${cli}" consolidate --if-due${base?` --home "${base}"`:''}`;
   const minutes=config.schedule.intervalMinutes;
   if(platform==='win32') {
-    const create=[['/Create','/F','/TN',TASK_NAME,'/SC','MINUTE','/MO',String(minutes),'/TR',run]];
-    if(config.schedule.runAtLogon)create.push(['/Create','/F','/TN',`${TASK_NAME}-Logon`,'/SC','ONLOGON','/TR',run]);
+    // node.exe 是控制台程序，直接运行会弹出终端窗口并抢走前台焦点；conhost --headless 不创建窗口。
+    const hidden=`conhost.exe --headless ${run}`;
+    const create=[['/Create','/F','/TN',TASK_NAME,'/SC','MINUTE','/MO',String(minutes),'/TR',hidden]];
+    if(config.schedule.runAtLogon)create.push(['/Create','/F','/TN',`${TASK_NAME}-Logon`,'/SC','ONLOGON','/TR',hidden]);
     return {platform,create,remove:[['/Delete','/F','/TN',TASK_NAME],['/Delete','/F','/TN',`${TASK_NAME}-Logon`]]};
   }
   const cron=`${minutes<60?`*/${minutes} * * * *`:`0 */${Math.max(1,Math.round(minutes/60))} * * *`} DOCUMENT_LEARNING_WORKER=1 ${run}`;
