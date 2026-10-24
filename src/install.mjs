@@ -122,7 +122,7 @@ export async function install({base=dataRoot(),userHome=homedir(),agents=['codex
         if(resolve(target)!==resolve(pluginRoot,'skills','document-learning'))throw new Error(`已有同名技能，未覆盖：${entry}`);
         linked=true;
       } catch(e) { if(e.code==='ENOENT'){await symlink(join(pluginRoot,'skills','document-learning'),entry,process.platform==='win32'?'junction':'dir');linked=true;}else throw e; }
-      registry.agents[agent]={path,commands:[command],entry,linked,pluginRoot:resolve(pluginRoot),runtime:process.execPath,script:join(pluginRoot,'bin','document-learning.mjs'),...(signalPermission?{signalPermission}:{})};
+      registry.agents[agent]={path,commands:[command],entry,linked,pluginRoot:resolve(pluginRoot),runtime:process.execPath,script:join(pluginRoot,'bin','document-learning.mjs'),...(signalPermission?{signalPermission}:{}),...(old?.personalSkills?{personalSkills:old.personalSkills}:{})};
       await writeJson(registryPath,registry);
       results.push({agent,config:path,entry,status:'installed-awaiting-new-session'});
     }

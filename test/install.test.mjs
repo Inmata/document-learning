@@ -35,7 +35,7 @@ test('安装重复执行不叠加 hooks，卸载保留原有 hooks、设置与�
   await uninstall({base});assert.deepEqual(await readJson(join(userHome,'.claude','settings.json')),old);
   assert.equal((await resolveLibrary({base,create:false})).root,join(base,'library'));
 });
-test('重装时本插件 hook 分组保持原位置，后来追加的用户分组不前移',async t=>{
+test('重装时本插件 hook 分组保持原位置，后来追加的用户分组不前移；保留个人技能链接记录',async t=>{
   const dir=await mkdtemp(join(tmpdir(),'doc-order-'));t.after(()=>rm(dir,{recursive:true,force:true}));
   const userHome=join(dir,'home'),base=join(dir,'private'),hooksPath=join(userHome,'.codex','hooks.json');
   await writeJson(hooksPath,{hooks:{SessionStart:[{hooks:[{type:'command',command:'first'}]}]}});
@@ -45,6 +45,9 @@ test('重装时本插件 hook 分组保持原位置，后来追加的用户分�
   const groups=(await readJson(hooksPath)).hooks.SessionStart;
   assert.deepEqual(groups.map(g=>g.hooks[0].command.includes('document-learning')?'own':g.hooks[0].command),['first','own','later']);
   assert.ok(groups[1].hooks[0].command.includes('新版本'));
+  const registryPath=join(base,'installation.json'),registry=await readJson(registryPath);registry.agents.codex.personalSkills={demo:{entry:'e',target:'t'}};await writeJson(registryPath,registry);
+  await install({base,userHome,agents:['codex'],pluginRoot:join(dir,'新版本')});
+  assert.deepEqual((await readJson(registryPath)).agents.codex.personalSkills,{demo:{entry:'e',target:'t'}},'重装保留个人技能链接记录');
 });
 test('已绑定库丢失时报告错误，不悄悄初始化另一个库',async t=>{
   const dir=await mkdtemp(join(tmpdir(),'doc-missing-'));t.after(()=>rm(dir,{recursive:true,force:true}));
