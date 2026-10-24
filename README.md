@@ -200,7 +200,7 @@ node bin/document-learning.mjs skill-rollback --name '技能标识' --version '�
 node bin/document-learning.mjs retire --id '经验ID' --id '另一个经验ID' --reason '撤销原因'
 ```
 
-扫描宿主会话时，Codex 子代理会话（自动审批 guardian、派生线程）和 `# AGENTS.md instructions for <目录>` 这类项目说明注入都不当作用户反馈。
+扫描宿主会话时，Codex 子代理会话（自动审批 guardian、派生线程）和 `# AGENTS.md instructions for <目录>` 这类项目说明注入都不当作用户反馈。workflow 管理的项目照常学习：只有用户粘贴的 workflow 项目对齐协议这一条消息被去掉，同一会话里对文档本身的反馈仍会整理；整理模型也被要求不把 AI 工具或插件的协作协议当成文档经验。
 
 个人技能目录自身处于 Git 仓库中时，发布前目标文件干净且索引可写，就只提交本次管理的文件，保留其他已暂存内容。默认使用个人快照和技能备份；不自动初始化 Git、执行仓库 hooks 或推送。
 

@@ -346,3 +346,14 @@ test('多端同步：另一台电脑撤销的经验在本机同步撤销',async 
  assert.equal((await local.read()).rules.find(r=>r.id===id).status,'retired');
  assert.equal(await syncMemoryFromSkillDirectory(local),false);
 });
+
+test('粘贴的 workflow 对齐协议只去掉这一条，同会话的文档反馈保留',()=>{
+ const msg=text=>JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text}]}});
+ const meta=JSON.stringify({type:'session_meta',payload:{id:'w',cwd:'D:/proj',source:'cli'}});
+ const s=normalizeJsonl([meta,msg('## 项目对齐（每次会话开始先做）\n读取 `docs/WORKFLOW-ALIGNMENT.md`，所有回复用简体中文'),msg('使用说明里的截图都加图注，放在图片下方')].join('\n'),'w.jsonl');
+ assert.equal(isWorkerSession(s),false);
+ assert.deepEqual(s.messages.filter(m=>m.role==='user').map(m=>m.text),['使用说明里的截图都加图注，放在图片下方']);
+ // 只是提到对齐文件的普通消息不受影响。
+ const plain=normalizeJsonl([meta,msg('把 docs/WORKFLOW-ALIGNMENT.md 里的表格改成三列')].join('\n'),'p.jsonl');
+ assert.equal(plain.messages.length,1);
+});

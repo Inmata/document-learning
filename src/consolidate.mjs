@@ -5,7 +5,7 @@ import {hash,readJson,writeJson,atomicWrite,withLock,stable} from './io.mjs';
 import {mergeLearning,addSources,validatePromotion,tierOf,support,scopeMatch} from './knowledge.mjs';
 import {learnerInstructions,learningSchema} from './provider.mjs';
 import {exportCatalog} from './catalog.mjs';
-import {scanTranscripts,applyScan,readTranscript,userMessages} from './scan.mjs';
+import {scanTranscripts,applyScan,readTranscript,userMessages,isWorkerSession} from './scan.mjs';
 
 // 后台批量整理：扫描宿主会话 → Jev 初筛 → 整理模型提炼 → 校验写入 → 编译手册。
 // 学习信号不再由当前会话的模型逐轮提交；当前会话只在用户明确要求时运行 remember。
@@ -25,7 +25,7 @@ export const consolidationInstructions=`${learnerInstructions}
 
 本次 mode=consolidation：输入是若干条已结束或进行中的宿主会话（sessions）和全部有效经验（knowledge）。
 1. 先逐个判断会话是否实际制作、修改或审阅文档，在 sessions 中为每个输入会话返回 {id,document,task,kind}；文档会话的 task 是稳定的文档标识（输入已给 task 时必须原样沿用），kind 优先 experiment-report/instruction/site-report/presentation/markdown。非文档会话 document=false，不从中学习。
-2. 只从文档会话的原始用户消息提炼经验；evidence.source 用消息 id，quote 逐字摘自该消息。
+2. 只从文档会话的原始用户消息提炼经验；evidence.source 用消息 id，quote 逐字摘自该消息。用户粘贴或转述的 AI 工具、插件、代理协作协议（如 workflow 的项目对齐、任务声明、回执、AGENTS.md 规则）是在教 AI 怎么工作，不是对文档的要求，不从中学习；同一会话里对文档本身的反馈照常学习。
 3. 与 knowledge 中已有经验表达同一要求时，不新建规则，改用 attach:[{id:已有经验id,evidence}] 合并证据；同一维度仍复用已有 key。attach 只能并入范围覆盖该会话的经验：已有经验限定了别的 task 时，为本文档新建同 key 的单份文档经验，并按第 4 条提出晋升。
 4. 同一条要求已在 ≥2 份不同文档（不同 task）中出现（knowledge 的 support 与 tier 可参考），用 promote 提出晋升：from 为这些已有经验 id，scope 为覆盖全部来源的更宽范围（去掉 task，保留 kind 等共同条件；全部文档通用才留空），text 为合并后的表述，strength 取来源中用户明确表达的强度。晋升需要用户确认，只是提案。
 5. 新经验的 scope 至少限定 task 或 kind；所有文档通用只能经第 4 条晋升，除非用户原话明确说“所有文档/一律”。不输出 retire、revise 或 skills。没有可学内容时各数组为空。`;
@@ -198,10 +198,12 @@ async function batchOnce(library,{config,learner,judge,now,progress,scan,rulesOn
  const id=`${new Date(now).toISOString().replace(/[:.]/g,'-')}-${randomUUID().slice(0,6)}`,root=join(library.root,'history','consolidations',id);
  const state=await library.read(),notes=[];
  const entries=eligible(state,now).sort((a,b)=>a[1].at.localeCompare(b[1].at)).slice(0,rulesOnly?0:config.consolidate.maxSessionsPerRun);
- const batch=[],unreadable=[];let chars=0;
+ const batch=[],unreadable=[],ignored=[];let chars=0;
  for(const [key,entry] of entries) {
   try{
    const s=await readTranscript(entry.path),item={...s,key,entry,fixedTask:state.transcripts?.[key]?.task};
+   // 旧版本扫描时已入队的子代理会话，在整理前再筛一次，标记已处理但不送模型。
+   if(isWorkerSession(s,{libraryRoot:library.root})){ignored.push({key,users:userMessages(s).length});continue;}
    const size=JSON.stringify(sessionView(item,item.fixedTask)).length;
    // 至少放入一个会话；其余超出本批字数上限的留到下一批。
    if(batch.length&&chars+size>BATCH_CHARS)break;
@@ -240,7 +242,7 @@ async function batchOnce(library,{config,learner,judge,now,progress,scan,rulesOn
   }
  } else {decision={sessions:[],rules:[],attach:[],observations:[],promote:[]};checked={judged:new Map(),sources:[],changes:[],proposals:[],rejected:[]};}
  await writeJson(join(root,'result.json'),{decision,notes,dropped,created:new Date(now).toISOString()});
- const processed=[...batch.map(s=>s.key),...unreadable.map(u=>u.key)];
+ const processed=[...batch.map(s=>s.key),...unreadable.map(u=>u.key),...ignored.map(u=>u.key)];
  const {result}=await library.transact('consolidate',draft=>{
   // 只保存被证据引用的用户消息，不把整段会话写进个人库。
   const cited=new Set([...(decision.rules || []),...(decision.attach || []),...(decision.observations || [])].flatMap(x=>(x.evidence || []).map(e=>e.source)));

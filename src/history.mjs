@@ -9,7 +9,12 @@ function textOf(content) {
 }
 export function isEnvironmentMessage(text) {
   // Codex 注入的标题带目录："# AGENTS.md instructions for <路径>"。
-  return /^\s*(?:# AGENTS\.md instructions\b|<environment_context>|<turn_aborted>|<permissions instructions>|<collaboration_mode>|<skill>|<external_codex_apps_open_page>)/.test(text);
+  return /^\s*(?:# AGENTS\.md instructions\b|<environment_context>|<turn_aborted>|<permissions instructions>|<collaboration_mode>|<skill>|<external_codex_apps_open_page>)/.test(text) || isPluginProtocol(text);
+}
+// 用户粘贴的 workflow 项目对齐协议是插件的工作方法，不是对文档的反馈。只去掉这一条消息，
+// 同一会话里其他用户消息照常整理，workflow 管理的项目里的文档反馈仍能学到。
+export function isPluginProtocol(text) {
+  return /WORKFLOW-ALIGNMENT\.md/.test(text) && /^\s*#{1,3}\s*项目对齐/m.test(text);
 }
 export function normalizeSession(raw, label='import') {
   const v=raw.structuredContent || raw;
