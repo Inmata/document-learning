@@ -96,7 +96,7 @@ node bin/document-learning.mjs uninstall
 
 `bind` 用于明确切换绑定，不自动迁移或覆盖旧库。跨电脑迁移时复制个人数据后重新绑定。
 
-也可以通过宿主原生插件机制安装本项目：根 `plugin.json` 提供 Agent Plugins/OpenAI 格式，另有 Codex 与 Claude Code 兼容清单。原生插件安装与上述用户级 hooks 安装选择一种。Codex 的 hook 信任由宿主处理，安装程序不修改信任记录；原生插件安装后仍需在宿主中启用并确认 hook 信任。源码 hooks 需要在本机可执行，GitHub 分发不等于进入官方公共插件目录。
+也可以通过宿主原生插件机制安装本项目：根 `plugin.json` 提供 Agent Plugins/OpenAI 格式，另有 Codex 与 Claude Code 兼容清单。原生插件安装与上述用户级 hooks 安装选择一种。Codex 的 hook 信任由宿主处理，安装程序不修改信任记录；Codex 按 `hooks.json` 中分组的位置和内容记录信任，重装时本插件的分组保持原位置，插件路径和 hook 设置不变时无需重新信任；路径或设置变化后需要重新审核。原生插件安装后仍需在宿主中启用并确认 hook 信任。源码 hooks 需要在本机可执行，GitHub 分发不等于进入官方公共插件目录。
 
 ## 配置文件
 

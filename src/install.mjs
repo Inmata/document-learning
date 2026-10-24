@@ -55,6 +55,23 @@ function removeOwned(config,commands) {
   }
   return next;
 }
+// Codex 按 hooks.json 中分组的位置和内容记录信任：重装时把本插件的分组放回原位置，只有首次安装才追加到末尾。
+export function placeOwned(config,commands,added) {
+  const next=structuredClone(config);next.hooks ||= {};
+  for(const event of new Set([...Object.keys(next.hooks),...Object.keys(added)])) {
+    const groups=next.hooks[event] || [];
+    if(!Array.isArray(groups))throw new Error(`现有 ${event} hook 格式无法识别，保留原文件`);
+    const out=[];let at=-1;
+    for(const g of groups) {
+      const kept=g.hooks?.filter(h=>!commands.includes(h.command)) || [];
+      if(at<0&&kept.length!==(g.hooks?.length || 0))at=out.length;
+      if(kept.length)out.push({...g,hooks:kept});
+    }
+    if(added[event])at<0?out.push(added[event]):out.splice(at,0,added[event]);
+    if(out.length)next.hooks[event]=out;else delete next.hooks[event];
+  }
+  return next;
+}
 export async function install({base=dataRoot(),userHome=homedir(),agents=['codex','claude'],pluginRoot=root,repository,skillDirectory,allowClaudeSignal=false,schedule=false,runner=exec,platform=process.platform}={}) {
   const configFile=await writeDefaultConfig(base),config=await loadConfig(base);
   let library=await resolveLibrary({base,skillDirectory});
@@ -81,17 +98,18 @@ export async function install({base=dataRoot(),userHome=homedir(),agents=['codex
         }
       }
       catch(e){if(e.code!=='ENOENT')throw e;}
-      const next=removeOwned(hostConfig,[...(old?.commands || []),command]);next.hooks ||= {};
+      const added={};
+      for(const event of events[agent]) {
+        const handler={type:'command',command,timeout:agent==='codex'&&['SessionEnd','Interrupt'].includes(event)?3:10};
+        if(agent==='codex'&&['SessionStart','UserPromptSubmit','PostToolUse'].includes(event))handler.additionalContextLimit=event==='PostToolUse'?8000:2400;
+        added[event]={...(event==='PermissionDenied'?{matcher:'Bash'}:{}),hooks:[handler]};
+      }
+      const next=placeOwned(hostConfig,[...(old?.commands || []),command],added);
       let signalPermission;
       const keepSignalPermission=agent==='claude'&&old?.signalPermission?.enabled&&Array.isArray(hostConfig.permissions?.allow)&&hostConfig.permissions.allow.includes(rememberAllowRule(old.pluginRoot));
       if(agent==='claude'&&(allowClaudeSignal||keepSignalPermission)) {
         removeSignalPermission(next,old?.signalPermission);
         signalPermission=addSignalPermission(next,pluginRoot);
-      }
-      for(const event of events[agent]) {
-        const handler={type:'command',command,timeout:agent==='codex'&&['SessionEnd','Interrupt'].includes(event)?3:10};
-        if(agent==='codex'&&['SessionStart','UserPromptSubmit','PostToolUse'].includes(event))handler.additionalContextLimit=event==='PostToolUse'?8000:2400;
-        (next.hooks[event] ||= []).push({...(event==='PermissionDenied'?{matcher:'Bash'}:{}),hooks:[handler]});
       }
       if(beforeHash)await atomicWrite(join(base,'install','backups',`${agent}-${beforeHash}.json`),await readFile(path,'utf8'));
       if(await fingerprint(path)!==beforeHash)throw new Error('安装期间宿主配置发生变化，已保留原文件');
