@@ -162,13 +162,14 @@ node bin/document-learning.mjs doctor
 | `judge.model` | `jev-latest` | Jev 模型；`jev-latest` 是稳定别名，`jev-preview` 为预览版 |
 | `judge.baseUrl` / `judge.apiKey` | null | 兼容 System One 接口的网关（如本机 magpie `http://127.0.0.1:3425`，key `magpie`）；null 时直连 TypeSafe 并读环境变量。apiKey 明文保存，只适合本机网关的占位值 |
 | `manual.maxChars` | 3000 | 单个手册的最大字数，超出按排序截断并注明省略条数 |
+| `hooks.documentSkills` | docx、pptx、xlsx、pdf、officecli、doc-coauthoring 等 | 进入这些文档技能时，PostToolUse 提醒先读个人经验手册；个人技能目录下的技能自动识别，`document-learning` 自身不提醒 |
 | `promotion.minDocsForType` / `minDocsForCore` | 2 / 3 | 晋升到文档类型层 / 核心层所需的最少文档数 |
 
 Jev 的凭据默认只从环境变量读取（`TYPESAFE_API_KEY`、`OPENROUTER_API_KEY` 等，见该包文档），插件不输出；配置了 `judge.baseUrl` 时改走该网关，只对 Jev 调用设置 `TYPESAFE_BASE_URL` 和 `TYPESAFE_API_KEY`。没有凭据或调用失败时自动回退为整理模型独立判断，并在整理报告中注明。
 
 ## 实际工作过程
 
-1. 会话中，hooks 只登记当前请求和问答工具的用户回答（供 `remember` 和晋升确认引用），并提示一行：需要立即记住时运行 `remember`，写文档前读手册。宿主自身的后台模型调用不建立会话。
+1. 会话中，hooks 只登记当前请求和问答工具的用户回答（供 `remember` 和晋升确认引用），并提示一行：需要立即记住时运行 `remember`，写文档前读手册目录的 `core.md` 及对应类型手册。进入文档技能（Claude 的 `Skill` 工具，或 Codex 读取 `<技能>/SKILL.md`）时，PostToolUse 会给出 `core.md` 和实际存在的类型手册的绝对路径；本会话读过手册后不再提醒。宿主自身的后台模型调用不建立会话。
 2. 后台整理（`consolidate --if-due`）增量扫描宿主会话文件：按文件记录水位，未变化的文件不读取，被截断或重建时从头开始；排除路径和整理器自身的会话不进入收件箱。首次扫描只排队最近 7 天的会话。
 3. 收件箱中待整理会话达到 `minSessions`，或非空且超过 `maxWaitHours` 时才调用模型；否则不产生任何模型请求。整理持有独占锁，已有整理在运行时直接退出。
 4. Jev 先丢弃高置信的非文档会话；其余会话连同全部有效经验交给整理模型（`claude --bare -p`，无工具、无 hooks、无技能）。模型判断文档会话及其 task、kind，逐字引用用户原话提炼经验；与已有经验相同的改为合并证据，同一要求出现在多份文档时提出晋升提案。程序校验引文和范围，不通过时带错误重试最多 3 次；仍失败的这批会话推迟一天再试一次，再次失败就放弃（移出待整理队列，会话之后有新消息才重新排队），其他会话照常整理。新经验至少限定文档或类型，除非用户原话明确说所有文档；所有文档通用的经验通常经晋升产生。

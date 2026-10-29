@@ -8,6 +8,7 @@ export const defaults={
  sources:{claude:true,codex:true,excludePaths:['*codeg-acp*','*workflow*','*\\Temp\\*']},
  judge:{provider:'jev',documentThreshold:0.85,model:'jev-latest',baseUrl:null,apiKey:null},
  manual:{maxChars:3000},
+ hooks:{documentSkills:['docx','pptx','xlsx','pdf','officecli','doc-coauthoring','dispensing-test-report','customer-site-report','customer-cleaning-instructions','exploratory-experiment-report']},
  promotion:{minDocsForType:2,minDocsForCore:3}
 };
 const notes={
@@ -17,6 +18,7 @@ const notes={
  _sources:'claude/codex：是否扫描对应宿主的会话文件；excludePaths：按完整路径排除的通配模式（* 匹配任意字符，不区分大小写）。',
  _judge:'provider：jev 使用 Jev 判断，none 全部交给整理模型；documentThreshold：Jev 自动判定所需的最低概率；model：Jev 模型（jev-latest 为稳定别名）；baseUrl/apiKey：只给 Jev 使用的 TypeSafe 兼容网关（如本机 magpie http://127.0.0.1:3425），null 时从环境变量 TYPESAFE_API_KEY 等读取凭据。',
  _manual:'maxChars：单个经验手册的最大字数，超出时按排序截断尾部。',
+ _hooks:'documentSkills：进入这些文档技能时，PostToolUse 提醒先读个人经验手册；个人技能目录下的技能也会自动识别，document-learning 自身不提醒。',
  _promotion:'minDocsForType：晋升到文档类型层所需的最少文档数；minDocsForCore：晋升到核心层所需的最少文档数。'
 };
 export const configPath=base=>join(base,'config.json');
@@ -51,6 +53,9 @@ export function validateConfig(raw) {
  if(c.judge.baseUrl!==null&&(typeof c.judge.baseUrl!=='string'||!/^https?:\/\/\S+$/.test(c.judge.baseUrl)))throw new Error('配置 judge.baseUrl 必须是 http(s) 地址或 null');
  if(c.judge.apiKey!==null&&(typeof c.judge.apiKey!=='string'||!c.judge.apiKey))throw new Error('配置 judge.apiKey 必须是非空字符串或 null');
  positiveInt(c.manual.maxChars,'manual.maxChars');
+ if(!Array.isArray(c.hooks.documentSkills)||c.hooks.documentSkills.some(s=>typeof s!=='string'||!s.trim()))throw new Error('配置 hooks.documentSkills 必须是非空字符串数组');
+ // 与 hooks.mjs 的比较一致：统一去掉首尾空格，避免 `" docx "` 这类配置静默失效。
+ c.hooks.documentSkills=c.hooks.documentSkills.map(s=>s.trim());
  positiveInt(c.promotion.minDocsForType,'promotion.minDocsForType');positiveInt(c.promotion.minDocsForCore,'promotion.minDocsForCore');
  return config;
 }

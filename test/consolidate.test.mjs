@@ -222,6 +222,8 @@ test('配置：整理模型强度默认 high，网关地址和强度无效时指
  assert.equal(validateConfig({consolidate:{baseUrl:'http://127.0.0.1:3425',apiKey:'magpie',model:'group/ds4.1flash'}}).consolidate.baseUrl,'http://127.0.0.1:3425');
  assert.throws(()=>validateConfig({consolidate:{effort:'extreme'}}),/consolidate\.effort/);
  assert.throws(()=>validateConfig({consolidate:{baseUrl:'127.0.0.1:3425'}}),/consolidate\.baseUrl/);
+ assert.deepEqual(validateConfig({hooks:{documentSkills:[' docx ','pptx']}}).hooks.documentSkills,['docx','pptx']);
+ assert.throws(()=>validateConfig({hooks:{documentSkills:['docx',' ']}}),/hooks\.documentSkills/);
 });
 
 test('整理三次修复仍失败时推迟这批会话，不再每次重试；残留锁按年龄清理',async t=>{

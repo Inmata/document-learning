@@ -14,7 +14,7 @@ import {install,uninstall,doctor,syncPersonalSkills,initSkillRepository,publishR
 import {rollbackSkill,migrateManagedSkills} from '../src/skills.mjs';
 import {runBackfill} from '../src/backfill.mjs';
 import {exportCatalog} from '../src/catalog.mjs';
-import {loadConfig} from '../src/config.mjs';
+import {loadConfig,defaults} from '../src/config.mjs';
 import {runConsolidation,consolidationInstructions,consolidationSchema} from '../src/consolidate.mjs';
 import {createJudge} from '../src/judge.mjs';
 import {remember} from '../src/remember.mjs';
@@ -26,6 +26,11 @@ const base=options.home || dataRoot();
 async function stdin(){let text='';for await(const chunk of process.stdin){text+=chunk;if(text.length>16*1024*1024)throw new Error('输入超过 16MB');}return text;}
 async function input(){const file=options.input?.[0];return file&&file!=='-'?readJson(file):JSON.parse(await stdin());}
 const print=value=>process.stdout.write(`${JSON.stringify(value,null,2)}\n`);
+// hook 不能因为配置写错就整体失效：回退默认配置继续处理，原因只写 stderr，避免污染 stdout 的 hook JSON。
+async function hookConfig(){
+  try{return await loadConfig(base);}
+  catch(error){process.stderr.write(`文档学习 hook：配置无效，改用默认配置（${error.message}）\n`);return defaults;}
+}
 async function main(){
   if(command==='help'||options.help){process.stdout.write(`文档持续学习插件\n\nnode bin/document-learning.mjs <命令> [选项]\n\ninstall [--agent codex|claude|both] [--schedule] [--allow-claude-signal] [--source-repository 只读来源仓库] [--skill-directory 个人技能与长期记忆仓库]\nuninstall [--agent codex|claude]\ndoctor\nbind [--library 个人库] [--source-repository 只读来源仓库] [--skill-directory 个人技能与长期记忆仓库]\ninit-skill-repo --output 新技能仓库目录 [--import-from 现有技能仓库] [--bind]\npublish-repo [--repo 仓库目录] [--remote 远端地址 | --name 仓库名 --owner 账号] [--visibility private|public] [--branch 分支] [--no-commit]\nquery --context 条件JSON文件\nlearn --input 已有原始证据及经验JSON\ncatalog：生成可阅读的经验及案例目录\nsync-skills：连接个人技能入口\nhistory-import --input 会话JSON或JSONL（可重复） [--source-repository 来源仓库] --output 数据集JSON\nbackfill --input 数据集 --decision 当前会话整理的JSON [--job 标识] [--replace-history 旧回放标识]\nbackfill --input 数据集 --provider 已明确选择的后端配置\nreplay --input 数据集JSON [--provider 后端配置JSON] [--job 标识] [--merge]\nreconcile --input 回放任务目录\nrollback --version doctor/events 中的回退版本\nretire --id 经验标识（可重复） --reason 撤销原因：撤销误收的经验，保留回退版本\nremember --session 会话 --text 经验 --quote 用户原话 [--category method|preference|constraint|fact] [--strength suggestion|default|required] [--scope 范围JSON | --task 文档标识 --kind 类型] [--key 维度 --value 选择] [--source 已登记的用户回答来源]：仅在用户明确要求记住时使用
 consolidate [--if-due | --now | --all-existing]：扫描宿主会话并批量整理经验；--if-due 未到期时不调用模型
@@ -64,7 +69,7 @@ promote --id 提案 --confirm-source 用户回答来源 [--confirm-quote 原文]
   if(!['hook','query','show-rule','learn','rollback','retire','skill-rollback','replay','reconcile','backfill','catalog','sync-skills','remember','consolidate','proposals','promote'].includes(command))throw new Error(`未知命令：${command}`);
   const library=await resolveLibrary({base,root:options.library});
   const binding=await readBinding(base) || {};
-  const config=['catalog','remember','promote','consolidate','retire'].includes(command)?await loadConfig(base):null;
+  const config=command==='hook'?await hookConfig():(['catalog','remember','promote','consolidate','retire'].includes(command)?await loadConfig(base):null);
   const catalogOptions={maxChars:config?.manual.maxChars};
   if(command==='catalog'){print(await exportCatalog(library,catalogOptions));return;}
   if(command==='remember'){
@@ -100,7 +105,7 @@ promote --id 提案 --confirm-source 用户回答来源 [--confirm-quote 原文]
   }
   if(command==='hook'){
     const event=await input();
-    const output=await handleHook(library,options.agent || 'codex',event);
+    const output=await handleHook(library,options.agent || 'codex',event,{config});
     // 技能入口同步要等安装锁，只在会话开始时做，避免 SessionEnd 等短超时 hook 被宿主终止。
     if(event.hook_event_name==='SessionStart'&&Object.keys((await library.read()).skills).length)await syncPersonalSkills({base,library});print(output);return;
   }
